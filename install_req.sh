@@ -39,7 +39,7 @@ python3.10 -m pip install --use-pep517 -r requirements.txt
 
 
 # old jax, old tensorflow, old numpy
-python3.10 -m pip install --upgrade --force-reinstall numpy~=1.0 "jax[tpu]==0.4.30" flax==0.8.2 optax==0.2.2 -f https://storage.googleapis.com/jax-releases/libtpu_releases.html tensorboard-plugin-profile==2.8.0 tensorboard-plugin-wit==1.8.1 tensorflow-datasets==4.6.0 tensorflow-estimator==2.9.0 tensorflow-hub==0.12.0 tensorflow-io-gcs-filesystem==0.26.0 tensorflow-io==0.26.0 tensorflow-metadata==1.12.0 tensorflow-probability==0.17.0 tensorflow-text==2.9.0 tensorflow==2.9.1 googleapis-common-protos==1.58.0 proto-plus==1.22.2 protobuf==3.19.6 
+python3.10 -m pip install --upgrade --force-reinstall numpy~=1.0 "jax[tpu]==0.4.33" flax==0.8.5 optax==0.2.2 -f https://storage.googleapis.com/jax-releases/libtpu_releases.html tensorboard-plugin-profile==2.8.0 tensorboard-plugin-wit==1.8.1 tensorflow-datasets==4.6.0 tensorflow-estimator==2.9.0 tensorflow-hub==0.12.0 tensorflow-io-gcs-filesystem==0.26.0 tensorflow-io==0.26.0 tensorflow-metadata==1.12.0 tensorflow-probability==0.17.0 tensorflow-text==2.9.0 tensorflow==2.9.1 googleapis-common-protos==1.58.0 proto-plus==1.22.2 protobuf==3.19.6 
 python3.10 -m pip install --upgrade --force-reinstall protobuf==3.19.6 
 
 # python3.10 -m pip install --upgrade --force-reinstall numpy~=1.0 "jax[tpu]==0.4.33" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html

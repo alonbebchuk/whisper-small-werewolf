@@ -8,7 +8,7 @@ BOS_LEN = 2
 EOS_LEN = 1
 MAX_DURATION = 30
 MASK_ID = -100
-MAX_LENGTH = 448
+
 SAMPLING_RATE = 16000
 WORD_ERROR_PENALTY = 100
 
@@ -58,7 +58,7 @@ Reminder - Assign one or more of the following tags to the last utterance (delim
 Assignment:
 """
 
-def create_prepare_decoder_input_ids_and_labels_fn(model_name):
+def create_prepare_decoder_input_ids_and_labels_fn(model_name, MAX_LENGTH = 448):
     tokenizer = WhisperTokenizer.from_pretrained(model_name)
     prompt_prefix_len = len(tokenizer.encode(prompt_prefix)) - EOS_LEN
     max_prompt_len = MAX_LENGTH - prompt_prefix_len
@@ -117,6 +117,8 @@ def filter_data(werewolf_data):
             return False
         target_not_empty = len(x["dialogue"][-1]["target"].strip()) > 0
         if not target_not_empty:
+            return False
+        if len(x["dialogue"]) > 200:
             return False
         return True
     
