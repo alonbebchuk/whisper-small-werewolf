@@ -132,7 +132,7 @@ def load_and_prepare_werewolf_data(model_name):
     # processor = WhisperProcessor.from_pretrained("openai/whisper-small")
     prepare_decoder_input_ids_and_labels, tokenizer = create_prepare_decoder_input_ids_and_labels_fn(model_name)
     prepare_audio, feature_extractor = create_prepare_audio_fn(model_name)
-    werewolf_data = werewolf_data.map(prepare_audio, batched=True, batch_size=BATCH_SIZE)
+    werewolf_data = werewolf_data.map(prepare_audio, batched=True, batch_size=BATCH_SIZE,num_proc=16)
     werewolf_data = werewolf_data.map(prepare_decoder_input_ids_and_labels)
     werewolf_data = werewolf_data.remove_columns(["start", "end", "idx", "Game_ID", "file_name", "video_name", "startRoles", "startTime", "endRoles", "playerNames"])
     return werewolf_data, tokenizer, feature_extractor
