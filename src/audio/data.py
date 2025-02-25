@@ -1,144 +1,93 @@
-from dataclasses import dataclass
-from transformers import WhisperProcessor
-from transformers import WhisperFeatureExtractor, WhisperTokenizer, WhisperProcessor, WhisperForConditionalGeneration
-
-
-BATCH_SIZE = 50
-BOS_LEN = 2
-EOS_LEN = 1
-MAX_DURATION = 30
-MASK_ID = -100
-
-SAMPLING_RATE = 16000
-WORD_ERROR_PENALTY = 100
-
-  
-
 import numpy as np
-from datasets import load_dataset, Audio, DatasetDict, Dataset
+from datasets import load_dataset, Audio
+from transformers import WhisperFeatureExtractor, WhisperTokenizer, WhisperProcessor
 
 
+def create_stream(
+    model_name="openai/whisper-small",
+    bos_token="<|startoftranscript|>",
+    dataset="iohadrubin/werewolf_dialogue_data_10sec_v2",
+    batch_size=16
+):
+    tokenizer = WhisperTokenizer.from_pretrained(model_name, bos_token)
+    feature_extractor = WhisperFeatureExtractor.from_pretrained(model_name)
+    processor = WhisperProcessor.from_pretrained(model_name)
 
-# batch
+    train_werewolf_data = load_dataset(dataset, split="train", streaming=True)
 
+    process_sample_fn = create_process_sample_fn(tokenizer)
+    iterable_train_werewolf_data = train_werewolf_data.map(process_sample_fn)
+    iterable_train_werewolf_batches = iterable_train_werewolf_data.iter(batch_size)
 
-from dataclasses import dataclass
-from transformers import WhisperProcessor
+    collate_fn = create_collate_fn(feature_extractor, processor)
+    train_werewolf_batches = (collate_fn(batch) for batch in iterable_train_werewolf_batches)
 
-@dataclass
-class DataCollatorSpeechSeq2SeqWithPadding:
-    processor: WhisperProcessor
-    decoder_start_token_id: int
-
-    def __call__(self, features):
-      batch = self.processor.feature_extractor.pad([{"input_features": feature} for feature in features["input_features"]], return_tensors="pt")
-
-      
-      decoder_input_ids_batch = self.processor.tokenizer.pad([{"input_ids": feature} for feature in features["decoder_input_ids"]], return_tensors="pt")
-      batch["decoder_input_ids"] = decoder_input_ids_batch["input_ids"]
-
-      labels_batch = self.processor.tokenizer.pad([{"input_ids": feature} for feature in features["labels"]], return_tensors="pt")
-      labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), MASK_ID)
-      batch["labels"] = labels
-
-      return batch
+    return train_werewolf_batches
 
 
+def create_process_sample_fn(
+    tokenizer,
+    prompt_prefix_len=65,
+    seq_len=448,
+    special_token_len=2
+):
+    def process_sample(sample):
+        truncated = False
+        prompt_tokens = tokenizer.encode(sample["prompt"], add_special_tokens=False)
+        prompt_len = len(prompt_tokens)
+        completion_tokens = tokenizer.encode(sample["completion"], add_special_tokens=False)
+        completion_len = len(completion_tokens)
 
-prompt_prefix, prompt_suffix = """Given the following dialogue and audio, assign the last utterance one or more of the following tags (delimited by commas):
-'Accusation', 'Defense', 'Evidence', 'Identity Declaration', 'Interrogation', 'No Strategy'
+        max_prompt_len = seq_len - (completion_len + special_token_len)
+        if prompt_len > max_prompt_len:
+            truncated = True
+            prompt_tokens = prompt_tokens[:prompt_prefix_len] + prompt_tokens[prompt_prefix_len + (prompt_len - max_prompt_len):]
+            prompt_len = len(prompt_tokens)
 
-```
-""", """
-```
+        tokens = [tokenizer.bos_token_id] + prompt_tokens + completion_tokens + [tokenizer.eos_token_id]
+        loss_mask = [0.0] * (1 + prompt_len) + [1.0] * (completion_len + 1)
 
-Reminder - Assign one or more of the following tags to the last utterance (delimited by commas):
-'Accusation', 'Defense', 'Evidence', 'Identity Declaration', 'Interrogation', 'No Strategy'
+        input_tokens = tokens[:-1]
+        input_tokens = input_tokens + [tokenizer.pad_token_id] * (seq_len - len(input_tokens))
 
-Assignment:
-"""
+        attention_mask = [1.0] * len(input_tokens) + [0.0] * (seq_len - len(input_tokens))
 
-def create_prepare_decoder_input_ids_and_labels_fn(model_name, MAX_LENGTH = 448):
-    tokenizer = WhisperTokenizer.from_pretrained(model_name)
-    prompt_prefix_len = len(tokenizer.encode(prompt_prefix)) - EOS_LEN
-    max_prompt_len = MAX_LENGTH - prompt_prefix_len
-    def prepare_decoder_input_ids_and_labels(sample):
-        dialogue = "\n".join(f"{x['speaker']}: {x['utterance']}" for x in sample["dialogue"])
-        target = sample["dialogue"][-1]["target"]
-        text = prompt_prefix + dialogue + prompt_suffix + target
+        target_tokens = tokens[1:]
+        target_tokens = target_tokens + [tokenizer.pad_token_id] * (seq_len - len(target_tokens))
 
-        input_ids = tokenizer.encode(text)
-        if len(input_ids) > MAX_LENGTH:
-            input_ids = input_ids[:prompt_prefix_len] + input_ids[-max_prompt_len:]
+        loss_mask = loss_mask[1:]
+        loss_mask = loss_mask + [0.0] * (seq_len - len(loss_mask))
 
-        decoder_input_ids = np.array(input_ids)
-        sample["decoder_input_ids"] = decoder_input_ids
+        result = {
+            "input_tokens": np.array(input_tokens, dtype=np.int32),
+            "target_tokens": np.array(target_tokens, dtype=np.int32),
+            "loss_mask": np.array(loss_mask, dtype=np.float32),
+            "attention_mask": np.array(attention_mask, dtype=np.int32),
+            "truncated": truncated
+        }
 
-        labels = np.array(input_ids)
-        target_len = len(tokenizer.encode(target)) - BOS_LEN
-        labels[:-target_len] = MASK_ID
-        sample["labels"] = labels
-        sample["target"] = target.split(", ")
-        # labels[target_len:] = tokenizer.encode(target)
+        return result
 
-        return sample
-
-    return prepare_decoder_input_ids_and_labels, tokenizer
-
-
-def create_prepare_audio_fn(model_name):
-  feature_extractor = WhisperFeatureExtractor.from_pretrained(model_name)
-  def prepare_audio(batch):
-    audio_arrays = [x["array"] for x in batch["audio"]]
-    batch["input_features"] = feature_extractor(audio_arrays, sampling_rate=SAMPLING_RATE, return_tensors="pt").input_features
+    return process_sample
 
 
-    return batch
+def create_collate_fn(feature_extractor, processor, sampling_rate=16000):
+    audio = Audio()
 
-  return prepare_audio, feature_extractor
+    def collate(batch):
+        audio_arrays = [audio.decode_example(x)["array"] for x in batch["audio"]]
 
-from datasets import load_dataset
+        input_features = feature_extractor(audio_arrays, sampling_rate=sampling_rate).input_features
+        input_features = processor.feature_extractor.pad([{"input_features": x} for x in list(input_features)], return_tensors="np").input_features
 
-def load_werewolf_data():
-    # werewolf_data = DatasetDict()
-    # werewolf_data["train"] = load_dataset("parquet", data_files=["https://huggingface.co/datasets/iohadrubin/werewolf_dialogue_data_10sec/resolve/main/data/train-00002-of-00014-e0e6b0000eedceb4.parquet"])["train"]
-    # werewolf_data["test"] = load_dataset("parquet", data_files=["https://huggingface.co/datasets/iohadrubin/werewolf_dialogue_data_10sec/resolve/main/data/train-00009-of-00014-603088eeb6352a9b.parquet"])["train"]
-    
-    return load_dataset("iohadrubin/werewolf_dialogue_data_10sec")
-    # return werewolf_data
+        result = {
+            "input_features": input_features,
+            "decoder_input_ids": np.array(batch["input_tokens"], dtype=np.int32),
+            "target_tokens": np.array(batch["target_tokens"], dtype=np.int32),
+            "loss_mask": np.array(batch["loss_mask"], dtype=np.float32),
+            "attention_mask": np.array(batch["attention_mask"], dtype=np.int32),
+        }
 
-def filter_data(werewolf_data):
-    def filter_fn(x):
-        duration_valid = x["end"] - x["start"] <= MAX_DURATION
-        if not duration_valid:
-            return False
-        has_target = x["dialogue"][-1]["target"] is not None 
-        if not has_target:
-            return False
-        target_not_empty = len(x["dialogue"][-1]["target"].strip()) > 0
-        if not target_not_empty:
-            return False
-        if len(x["dialogue"]) > 200:
-            return False
-        return True
-    
-    werewolf_data = werewolf_data.filter(filter_fn)
-    return werewolf_data
+        return result
 
-
-def load_and_prepare_werewolf_data(model_name):
-
-    werewolf_data = load_werewolf_data()
-    werewolf_data = filter_data(werewolf_data)
-
-    # processor = WhisperProcessor.from_pretrained("openai/whisper-small")
-    prepare_decoder_input_ids_and_labels, tokenizer = create_prepare_decoder_input_ids_and_labels_fn(model_name)
-    prepare_audio, feature_extractor = create_prepare_audio_fn(model_name)
-    werewolf_data = werewolf_data.map(prepare_audio, batched=True, batch_size=BATCH_SIZE,num_proc=16)
-    werewolf_data = werewolf_data.map(prepare_decoder_input_ids_and_labels)
-    werewolf_data = werewolf_data.remove_columns(["start", "end", "idx", "Game_ID", "file_name", "video_name", "startRoles", "startTime", "endRoles", "playerNames"])
-    return werewolf_data, tokenizer, feature_extractor
-
-
-
-
+    return collate

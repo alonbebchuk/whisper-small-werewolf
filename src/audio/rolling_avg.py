@@ -7,6 +7,7 @@ class RollingAverage(struct.PyTreeNode):
     Identical to the example in style, but using JAX arrays and flax.struct.
     Keeps track of a ring buffer of values, returns rolling mean.
     """
+
     size: int
     last_element: int
     mat: jnp.ndarray
