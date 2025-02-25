@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import jax
 def cross_entropy_loss_and_accuracy(logits, tokens, valid=None):
     if valid is None:
         valid = jnp.ones(tokens.shape[:2])
@@ -29,5 +30,6 @@ def cross_entropy_loss_and_accuracy(logits, tokens, valid=None):
         'accuracy': accuracy,
         'token_logprob_sum': jnp.sum(token_log_prob),
         'valid_sum': jnp.sum(valid),
+        "is_correct": correct.sum(),
     }
     return loss, metrics
