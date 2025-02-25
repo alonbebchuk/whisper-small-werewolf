@@ -1,0 +1,188 @@
+# # cmd python3 -m pip install -q 
+# # --extra-index-url https://download.pytorch.org/whl/cu116
+# --find-links https://download.pytorch.org/whl/torch_stable.html
+# torch==2.1.0+cpu
+# # cmd python3 -m pip install -q torch==2.1.0+cpu --find-links https://download.pytorch.org/whl/torch_stable.html
+
+# absl-py>=1.0.0
+# apache-beam
+# appdirs
+# cloudpickle
+# clu==0.0.9
+# debugpy
+# dill==0.3.5 #need to reorder installs to this version is installed and not something else
+# dm-haiku
+# fsspec==2023.10.0
+# filelock
+# flax==0.7.1
+# gin-config>=0.5.0
+# git+http://github.com/OhadRubin/learned_optimization
+# git+https://github.com/huggingface/transformers@3657748b4d1539ca89555f1cf2b465b74f445491
+# # git+https://github.com/OhadRubin/transformers@cce639d6526eb2b4f69aaa16b7c5052f7becdef1
+
+# git+https://github.com/google/seqio
+# git+https://github.com/OhadRubin/streamlit_rough_notation
+# git+https://github.com/OhadRubin/tiny_queue.git
+# git+https://github.com/OhadRubin/mini_redis
+# # git+https://github.com/OhadRubin/LSH.git
+# git+https://github.com/OhadRubin/lookup.git
+# git+https://github.com/ott-jax/ott@main
+# gitpython
+# jax==0.4.7
+# jaxlib==0.4.7
+# loguru
+# more_itertools==8.14.0
+# mosestokenizer
+# nbformat>=4.2.0
+# ndjson
+# numpy>=1.22.4
+# plotly==5.11.0
+# rank_bm25
+# rax==0.2.0
+# sacremoses
+# seaborn
+# # sentencepiece>=0.1.96
+# sentencepiece==0.1.99
+# setuptools==65.7.0
+# sharedutils
+# shortuuid
+# supabase
+# t5
+# tmuxp
+# ir-measures
+# ranx
+# mlxu
+# pyzmq
+# pyzstd # gensim
+# python-logging-loki
+# networkit
+# networkx==3.1
+# polars
+# faiss-cpu
+# git+https://github.com/OhadRubin/rq
+# cmd2
+# setproctitle
+# rq-dashboard
+# rq
+# redis
+# datasketch
+# git+https://github.com/drivendataorg/cloudpathlib.git#egg=cloudpathlib[all]
+# python-dotenv
+# datasets==2.14.6
+# psycopg2-binary
+# sqlalchemy<2.0
+# smart_open[s3]
+# boto3
+# # optax==0.1.8
+# # git+https://github.com/google-deepmind/optax@fc5de3d3951c4dfd87513c6426e30baf505d89ae
+# pydantic
+# fastapi
+# uvicorn
+# gradio
+# # cmd python3 -m pydantic fastapi uvicorn gradio
+smart-open[gcs]==6.4.0
+jsonpickle==3.0.2
+sharedutils==0.0.7
+filelock==3.8.0
+loguru==0.6.0
+appdirs==1.4.4
+wandb==0.15.12
+ray[data]==2.7.1
+# cmd python3 -m pip install -q 
+# --extra-index-url https://download.pytorch.org/whl/cu116
+--find-links https://download.pytorch.org/whl/torch_stable.html
+torch==2.1.0+cpu
+# cmd python3 -m pip install -q torch==2.1.0+cpu --find-links https://download.pytorch.org/whl/torch_stable.html
+einops==0.7.0 
+absl-py>=1.0.0
+# apache-beam==2.51.0
+evaluate==0.4.1
+appdirs
+accelerate==0.29.0
+cloudpickle
+clu==0.0.9
+debugpy
+# dill==0.3.5 #need to reorder installs to this version is installed and not something else
+dm-haiku
+fsspec==2023.10.0
+filelock
+gcsfs
+gin-config>=0.5.0
+# git+https://github.com/huggingface/transformers@3657748b4d1539ca89555f1cf2b465b74f445491
+transformers==4.43.3
+git+https://github.com/google/seqio@586400dd19c3b1106a27fec1d3f968b206dffaed
+git+https://github.com/OhadRubin/streamlit_rough_notation
+git+https://github.com/OhadRubin/tiny_queue.git
+git+https://github.com/OhadRubin/mini_redis
+# git+https://github.com/OhadRubin/LSH.git
+git+https://github.com/OhadRubin/lookup.git
+# git+https://github.com/ott-jax/ott@main
+git+https://github.com/OhadRubin/alerts
+gitpython
+# jax==0.4.7
+# jaxlib==0.4.7
+loguru
+more_itertools==8.14.0
+mosestokenizer
+nbformat>=4.2.0
+ndjson
+numpy>=1.22.4
+plotly==5.11.0
+rank_bm25
+rax==0.2.0
+sacremoses
+seaborn
+# sentencepiece>=0.1.96
+sentencepiece==0.1.99
+setuptools==65.7.0
+# setuptools<72
+sharedutils
+shortuuid
+supabase
+t5
+tmuxp
+ir-measures
+ranx
+mlxu
+pyzmq
+pyzstd
+gensim
+python-logging-loki
+networkit
+networkx==3.1
+polars
+faiss-cpu
+git+https://github.com/OhadRubin/rq
+git+https://github.com/haoliuhl/ringattention
+cmd2
+setproctitle
+rq-dashboard
+rq
+redis
+datasketch
+git+https://github.com/drivendataorg/cloudpathlib.git#egg=cloudpathlib[all]
+python-dotenv
+# datasets==2.14.6
+datasets==3.3.1
+psycopg2-binary
+sqlalchemy<2.0
+smart_open[s3]
+boto3
+# optax==0.1.8
+# git+https://github.com/google-deepmind/optax@fc5de3d3951c4dfd87513c6426e30baf505d89ae
+pydantic
+fastapi
+uvicorn
+# gradio==4.9.1
+evaluate==0.4.1
+# cmd python3 -m pydantic fastapi uvicorn gradio
+# cmd python3.10 -m pip install jaxtyping
+peft==0.10.0
+jaxtyping
+environs==11.0.0
+scipy==1.12.0
+botocore==1.34.64
+colored==2.2.4 
+torchvision==0.16.0
+ipywidgets
+librosa
