@@ -3,8 +3,8 @@ import jax.numpy as jnp
 from common.utils import cross_entropy_loss_and_accuracy
 from jax import jit, value_and_grad
 from jax.lax import psum
-from train_state import TrainStateWithMetrics
-from types import Dict
+from training.train_state import TrainStateWithMetrics
+from typing import Dict
 
 
 @jit
@@ -13,7 +13,7 @@ def train_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray]):
         outputs = state.apply_fn(**{"params": params}, input_features=batch["input_features"], decoder_input_ids=batch["decoder_input_ids"], decoder_attention_mask=batch["attention_mask"], train=True)
 
         logits = outputs.logits
-        unnorm_loss, metrics = cross_entropy_loss_and_accuracy(logits, batch["target_tokens"], batch["loss_masks"])
+        unnorm_loss, metrics = cross_entropy_loss_and_accuracy(logits, batch["target_tokens"], batch["loss_mask"])
         return unnorm_loss, (logits, metrics)
 
     grad_fn = value_and_grad(loss_fn, has_aux=True)
