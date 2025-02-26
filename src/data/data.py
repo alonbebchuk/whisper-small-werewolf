@@ -3,13 +3,8 @@ from datasets import load_dataset, Audio
 from transformers import WhisperFeatureExtractor, WhisperTokenizer, WhisperProcessor
 
 
-def create_stream(
-    model_name="openai/whisper-small",
-    bos_token="<|startoftranscript|>",
-    dataset="iohadrubin/werewolf_dialogue_data_10sec_v2",
-    batch_size=16
-):
-    tokenizer = WhisperTokenizer.from_pretrained(model_name, bos_token)
+def create_stream(model_name="openai/whisper-small", bos_token="<|startoftranscript|>", dataset="alonbeb/werewolf_dataset", batch_size=16):
+    tokenizer = WhisperTokenizer.from_pretrained(model_name, bos_token=bos_token)
     feature_extractor = WhisperFeatureExtractor.from_pretrained(model_name)
     processor = WhisperProcessor.from_pretrained(model_name)
 
@@ -25,45 +20,35 @@ def create_stream(
     return train_werewolf_batches
 
 
-def create_process_sample_fn(
-    tokenizer,
-    prompt_prefix_len=65,
-    seq_len=448,
-    special_token_len=2
-):
+def create_process_sample_fn(tokenizer, seq_len=448):
     def process_sample(sample):
-        truncated = False
         prompt_tokens = tokenizer.encode(sample["prompt"], add_special_tokens=False)
-        prompt_len = len(prompt_tokens)
         completion_tokens = tokenizer.encode(sample["completion"], add_special_tokens=False)
-        completion_len = len(completion_tokens)
 
-        max_prompt_len = seq_len - (completion_len + special_token_len)
-        if prompt_len > max_prompt_len:
-            truncated = True
-            prompt_tokens = prompt_tokens[:prompt_prefix_len] + prompt_tokens[prompt_prefix_len + (prompt_len - max_prompt_len):]
-            prompt_len = len(prompt_tokens)
+        input_tokens = [tokenizer.bos_token_id] + prompt_tokens + completion_tokens
+        input_tokens_padding_len = seq_len - len(input_tokens)
 
-        tokens = [tokenizer.bos_token_id] + prompt_tokens + completion_tokens + [tokenizer.eos_token_id]
-        loss_mask = [0.0] * (1 + prompt_len) + [1.0] * (completion_len + 1)
+        input_tokens = input_tokens + ([tokenizer.pad_token_id] * input_tokens_padding_len)
+        attention_mask = ([1.0] * (seq_len - input_tokens_padding_len)) + ([0.0] * input_tokens_padding_len)
 
-        input_tokens = tokens[:-1]
-        input_tokens = input_tokens + [tokenizer.pad_token_id] * (seq_len - len(input_tokens))
+        target_tokens = prompt_tokens + completion_tokens
+        target_tokens_padding_len = seq_len - len(target_tokens) - 1
 
-        attention_mask = [1.0] * len(input_tokens) + [0.0] * (seq_len - len(input_tokens))
+        target_tokens = target_tokens + ([tokenizer.pad_token_id] * target_tokens_padding_len) + [tokenizer.eos_token_id]
 
-        target_tokens = tokens[1:]
-        target_tokens = target_tokens + [tokenizer.pad_token_id] * (seq_len - len(target_tokens))
+        completion_tokens_len = len(completion_tokens) + 1
+        loss_mask = ([0.0] * (seq_len - completion_tokens_len)) + ([1.0] * (len(completion_tokens) + 1))
 
         loss_mask = loss_mask[1:]
-        loss_mask = loss_mask + [0.0] * (seq_len - len(loss_mask))
+        loss_mask_padding_len = seq_len - len(loss_mask)
+
+        loss_mask = loss_mask + [0.0] * loss_mask_padding_len
 
         result = {
             "input_tokens": np.array(input_tokens, dtype=np.int32),
             "target_tokens": np.array(target_tokens, dtype=np.int32),
             "loss_mask": np.array(loss_mask, dtype=np.float32),
-            "attention_mask": np.array(attention_mask, dtype=np.int32),
-            "truncated": truncated
+            "attention_mask": np.array(attention_mask, dtype=np.int32)
         }
 
         return result
