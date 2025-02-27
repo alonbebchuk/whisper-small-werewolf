@@ -2,7 +2,7 @@ import jax.numpy as jnp
 
 from common.utils import cross_entropy_loss_and_accuracy
 from jax import jit, value_and_grad
-from jax.lax import psum
+from jax.lax import psum, pmean
 from training.train_state import TrainStateWithMetrics
 from typing import Dict
 
@@ -23,11 +23,13 @@ def train_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray]):
     new_state = state.apply_gradients(grads=grads)
 
     total_n_examples = psum(logits.shape[0], "batch")
-    total_is_correct = psum(metrics["is_correct"], "batch")
+    # total_is_correct = psum(metrics["is_correct"], "batch")
     total_loss = psum(unnorm_loss, "batch")
 
-    acc = total_is_correct / total_n_examples
+    # acc = total_is_correct / total_n_examples
     loss = total_loss / total_n_examples
+
+    acc = pmean(metrics["accuracy"], "batch")
 
     curr_loss, new_loss_metric = new_state.loss_metric.update(loss)
     curr_acc, new_acc_metric = new_state.acc_metric.update(acc)
