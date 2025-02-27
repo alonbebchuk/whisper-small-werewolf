@@ -4,7 +4,7 @@ import numpy as np
 
 from src.common.utils import get_config
 from src.common.whisper import FlaxWhisperForConditionalGeneration
-from src.data.data import create_stream
+from src.data.data import create_dataloader
 from tqdm.auto import tqdm
 from flax.training.common_utils import shard
 from src.training.train_state import create_train_state
@@ -23,10 +23,10 @@ eval_freq = 2000
 eval_steps = 5
 eval_counter = eval_freq
 seen_examples = 0
-stream = create_stream()
+dataloader = create_dataloader()
 import wandb
 wandb.init(project="whisper-small-werewolf")
-for step, batch in zip(pbar, stream):
+for step, batch in zip(pbar, dataloader):
     print(jax.tree.map(np.shape, batch))
     batch = shard(batch)
     epoch = batch.pop("epoch", 0)
