@@ -3,8 +3,8 @@ from flax.training.train_state import TrainState
 from flax.training.common_utils import shard_prng_key
 from jax.random import PRNGKey, split
 from optax import adamw
-from training.lr_schedule import create_learning_rate_schedule
-from training.rolling_avg import RollingAverage
+from src.training.lr_schedule import create_learning_rate_schedule
+from src.training.rolling_avg import RollingAverage
 
 
 class TrainStateWithMetrics(TrainState):
