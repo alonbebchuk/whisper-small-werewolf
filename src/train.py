@@ -10,6 +10,20 @@ from flax.training.common_utils import shard
 from src.training.train_state import create_train_state
 from src.training.train_step import train_step
 
+def generate(dataloader):
+    itr = iter(dataloader)
+    epoch = 0
+    while True:
+        try:
+            batch = next(itr)
+        except StopIteration:
+            # Re-start DataLoader if exhausted
+            itr = iter(dataloader)
+            batch = next(itr)
+            epoch += 1
+        batch = shard(batch)
+        batch["epoch"] = epoch
+        yield batch
 
 config = get_config()
 model = FlaxWhisperForConditionalGeneration.from_pretrained("openai/whisper-small", from_pt=True)
@@ -23,9 +37,9 @@ eval_freq = 2000
 eval_steps = 5
 eval_counter = eval_freq
 seen_examples = 0
-dataloader = create_dataloader()
-import wandb
-wandb.init(project="whisper-small-werewolf")
+dataloader = generate(create_dataloader())
+# import wandb
+# wandb.init(project="whisper-small-werewolf")
 for step, batch in zip(pbar, dataloader):
     print(jax.tree.map(np.shape, batch))
     batch = shard(batch)
@@ -46,9 +60,9 @@ for step, batch in zip(pbar, dataloader):
         "epoch": epoch,
         # "seen_examples": seen_examples,
     }
-    wandb.log(metrics)
+    # wandb.log(metrics)
 
-    # print(metrics)
+    print(metrics)
 
     # eval_counter -= 1
     # if eval_counter==0:

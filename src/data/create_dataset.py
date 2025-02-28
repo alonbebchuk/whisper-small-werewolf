@@ -2,6 +2,18 @@ from datasets import load_dataset
 from transformers import WhisperTokenizer
 
 
+strategies = ["Accusation", "Defense", "Evidence", "Identity Declaration", "Interrogation", "No Strategy", "Call for Action"]
+prompt_format = """Given the previous audio and the following dialogue, determine whether the last utterance in the following spoken dialogue fits under the strategy category of: {strategy}.
+Respond with a single word: Yes or No.
+Dialogue:
+```
+{dialogue}
+```
+Does the last utterance fit the strategy category {strategy}?
+Completion:
+"""
+
+
 def load_werewolf_data(dataset="iohadrubin/werewolf_dialogue_data_10sec"):
     werewolf_data = load_dataset(dataset)
     return werewolf_data
@@ -21,41 +33,31 @@ def filter_data(werewolf_data, max_duration=30):
     return werewolf_data
 
 
-prompt_prefix = """Given the following dialogue and audio, assign the last utterance one or more of the following tags (delimited by commas):
-'Accusation', 'Defense', 'Evidence', 'Identity Declaration', 'Interrogation', 'No Strategy'
-
-```
-"""
-prompt_suffix = """
-```
-Reminder - Assign one or more of the following tags to the last utterance (delimited by commas):
-'Accusation', 'Defense', 'Evidence', 'Identity Declaration', 'Interrogation', 'No Strategy'
-Assignment:
-"""
-
-
-def create_into_prompt_completion_fn(model_name="openai/whisper-small", bos_token="<|startoftranscript|>", max_length=447):
+def create_into_prompt_completion_fn(strategy, model_name="openai/whisper-small", bos_token="<|startoftranscript|>", max_length=447):
     tokenizer = WhisperTokenizer.from_pretrained(model_name, bos_token=bos_token)
 
     def into_prompt_completion(sample):
         i = 0
+        prompt = None
+        completion = "Yes" if strategy in sample["dialogue"][-1]["target"].split(", ") else "No"
         while i < len(sample["dialogue"]):
             curr_dialogue = sample["dialogue"][i:]
             dialogue = "\n".join(f"{x['speaker']}: {x['utterance']}" for x in curr_dialogue)
-            prompt = prompt_prefix + dialogue + prompt_suffix
-            target = sample["dialogue"][-1]["target"]
-            input_ids = tokenizer.encode(prompt + target, add_special_tokens=False)
+            prompt = prompt_format.format(strategy=strategy, dialogue=dialogue)
+            input_ids = tokenizer.encode(prompt + completion, add_special_tokens=False)
             if len(input_ids) <= max_length:
-                return {"prompt": prompt, "completion": target}
+                break
             i += 1
-        return {"prompt": None, "completion": None}
+        return {"prompt": prompt, "strategy": strategy, "completion": completion}
 
     return into_prompt_completion
 
 
-into_prompt_completion = create_into_prompt_completion_fn()
 werewolf_data = load_werewolf_data()
 werewolf_data = filter_data(werewolf_data)
-werewolf_data = werewolf_data.map(into_prompt_completion, num_proc=50)
-werewolf_data = werewolf_data.filter(lambda x: x["prompt"] is not None)
-werewolf_data.push_to_hub("alonbeb/werewolf_dataset")
+for strategy in strategies:
+    into_prompt_completion = create_into_prompt_completion_fn(strategy)
+    strategy_werewolf_data = werewolf_data.map(into_prompt_completion, num_proc=50)
+    strategy_werewolf_data = strategy_werewolf_data.filter(lambda sample: sample["prompt"] is not None)
+    strategy_werewolf_data = strategy_werewolf_data.shuffle()
+    strategy_werewolf_data.push_to_hub(f"alonbeb/werewolf_{strategy.replace(' ', '-')}_data")
