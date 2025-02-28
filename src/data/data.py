@@ -4,39 +4,21 @@ from torch.utils.data import DataLoader
 from transformers import WhisperFeatureExtractor, WhisperTokenizer, WhisperProcessor
 
 
-def create_dataloader(model_name="openai/whisper-small", bos_token="<|startoftranscript|>", dataset="iohadrubin/werewolf_dialogue_data_10sec", batch_size=16):
+def create_dataloader(model_name="openai/whisper-small", bos_token="<|startoftranscript|>", dataset="iohadrubin/werewolf_dialogue_data_10sec_v2", batch_size=16):
     tokenizer = WhisperTokenizer.from_pretrained(model_name, bos_token=bos_token)
     feature_extractor = WhisperFeatureExtractor.from_pretrained(model_name)
     processor = WhisperProcessor.from_pretrained(model_name)
 
     train_werewolf_data = load_dataset(dataset, split="train")
 
-    into_prompt_completion_fn = create_into_prompt_completion_fn(tokenizer)
-    process_sample_fn = create_process_sample_fn(tokenizer)
-    train_werewolf_data = filter_data(train_werewolf_data)
-    train_werewolf_data = train_werewolf_data.map(into_prompt_completion_fn, batched=True, batch_size=1)
-    train_werewolf_data = train_werewolf_data.filter(lambda x: x["prompt"] is not None)
-    train_werewolf_data = train_werewolf_data.map(process_sample_fn)
+    process_sample_fn = create_process_batch_fn(tokenizer)
+    train_werewolf_data = train_werewolf_data.map(process_sample_fn, batched=True, batch_size=batch_size, remove_columns=train_werewolf_data.column_names)
 
     shuffled_iterable_dataset = train_werewolf_data.shuffle()
 
     train_werewolf_dataloader = DataLoader(shuffled_iterable_dataset, collate_fn=create_collate_fn(feature_extractor, processor), batch_size=batch_size)
 
     return train_werewolf_dataloader
-
-
-def filter_data(werewolf_data, max_duration=30):
-    def filter_fn(x):
-        duration = x["end"] - x["start"]
-        if duration > max_duration:
-            return False
-        target = x["dialogue"][-1]["target"]
-        if target is None or len(target.strip()) == 0:
-            return False
-        return True
-
-    werewolf_data = werewolf_data.filter(filter_fn)
-    return werewolf_data
 
 
 strategies = ["Accusation", "Defense", "Evidence", "Identity Declaration", "Interrogation", "No Strategy", "Call for Action"]
@@ -51,55 +33,49 @@ Completion:
 """
 
 
-def create_into_prompt_completion_fn(tokenizer, seq_len=448):
-    max_length = seq_len - 1
+def create_process_batch_fn(tokenizer, seq_len=448):
+    def process_batch(batch):
+        audio_list, prompt_list, strategy_list, completion_list, input_tokens_list, target_tokens_list, loss_mask_list, attention_mask_list = [], [], [], [], [], [], [], []
 
-    def into_prompt_completion(sample):
-        sample = sample[0]
-        i = 0
-        prompts, strategies, completions = [], [], []
-        targets = sample["dialogue"][-1]["target"].split(", ")
-        # TODO: move to v2 and take dialogue from there
+        audio = [a for a in batch["audio"]]
+        dialogue = [p.split("```")[1].strip() for p in batch["prompt"]]
+        targets = [c.split(", ") for c in batch["completion"]]
         for strategy in strategies:
-            completion = "Yes" if strategy in targets else "No"
-            prompt = None
-            while i < len(sample["dialogue"]):
-                curr_dialogue = sample["dialogue"][i:]
-                dialogue = "\n".join(f"{x['speaker']}: {x['utterance']}" for x in curr_dialogue)
-                prompt = prompt_format.format(strategy=strategy, dialogue=dialogue)
-                input_ids = tokenizer.encode(prompt + completion, add_special_tokens=False)
-                if len(input_ids) <= max_length:
-                    break
-                i += 1
-            prompts.append(prompt)
-            strategies.append(strategy)
-            completions.append(completion)
-        return {"prompt": prompts, "strategy": strategies, "completion": completions}
+            prompt = [prompt_format.format(strategy=strategy, dialogue=d) for d in dialogue]
+            completion = ["Yes" if strategy in t else "No" for t in targets]
+            text = [p + c for (p, c) in zip(prompt, completion)]
 
-    return into_prompt_completion
+            tokens = [[tokenizer.bos_token_id] + tokenizer.encode(t, add_special_tokens=False) + [tokenizer.eos_token_id] for t in text]
 
+            input_tokens = [t[:-1] for t in tokens]
+            input_tokens = [it + [tokenizer.pad_token_id] * (seq_len - len(it)) for it in input_tokens]
+            input_tokens = [np.array(it, dtype=np.int32) for it in input_tokens]
 
-def create_process_sample_fn(tokenizer, seq_len=448):
-    def process_sample(sample):
-        tokens = tokenizer.encode(sample["prompt"] + sample["completion"], add_special_tokens=False)
-        tokens = [tokenizer.bos_token_id] + tokens + [tokenizer.eos_token_id]
-        prompt_len = len(tokenizer.encode(sample["prompt"], add_special_tokens=False)) + 1
-        loss_masks = ([0.0] * prompt_len) + ([1.0] * (len(tokens) - prompt_len))
-        input_tokens = tokens[:-1]
-        loss_masks = loss_masks[1:]
-        target_tokens = tokens[1:]
-        attention_mask = [1] * len(input_tokens) + [0] * (seq_len - len(input_tokens))
-        input_tokens = input_tokens + [tokenizer.pad_token_id] * (seq_len - len(input_tokens))
-        target_tokens = target_tokens + [tokenizer.pad_token_id] * (seq_len - len(target_tokens))
-        loss_masks = loss_masks + [0.0] * (seq_len - len(loss_masks))
-        return {
-            "input_tokens": np.array(input_tokens, dtype=np.int32),
-            "target_tokens": np.array(target_tokens, dtype=np.int32),
-            "loss_mask": np.array(loss_masks, dtype=np.float32),
-            "attention_mask": np.array(attention_mask, dtype=np.int32),
-        }
+            target_tokens = [t[1:] for t in tokens]
+            target_tokens = [tt + [tokenizer.pad_token_id] * (seq_len - len(tt)) for tt in target_tokens]
+            target_tokens = [np.array(tt, dtype=np.int32) for tt in target_tokens]
 
-    return process_sample
+            tokens_len = [len(t) for t in tokens]
+            prompt_len = [len(tokenizer.encode(p, add_special_tokens=False)) for p in prompt]
+            loss_mask = [([0.0] * p_len) + ([1.0] * (t_len - p_len)) + ([0.0] * (seq_len - t_len)) for p_len, t_len in zip(prompt_len, tokens_len)]
+            loss_mask = [np.array(lm, dtype=np.float32) for lm in loss_mask]
+
+            input_tokens_len = [len(it) for it in input_tokens]
+            attention_mask = [([1] * it_len + [0] * (seq_len - it_len)) for it_len in input_tokens_len]
+            attention_mask = [np.array(am, dtype=np.int32) for am in attention_mask]
+
+            audio_list.extend(audio)
+            prompt_list.extend(prompt)
+            strategy_list.extend([strategy] * 16)
+            completion_list.extend(completion)
+            input_tokens_list.extend(input_tokens)
+            target_tokens_list.extend(target_tokens)
+            loss_mask_list.extend(loss_mask)
+            attention_mask_list.extend(attention_mask)
+
+        return {"audio": audio_list, "prompt": prompt_list, "strategy": strategy_list, "completion": completion_list, "input_tokens": input_tokens_list, "target_tokens": target_tokens_list, "loss_mask": loss_mask_list, "attention_mask": attention_mask_list}
+
+    return process_batch
 
 
 def create_collate_fn(feature_extractor, processor, sampling_rate=16000):
