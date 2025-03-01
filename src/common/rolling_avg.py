@@ -19,5 +19,7 @@ class RollingAverage(PyTreeNode):
 
     @classmethod
     def create(cls, *, size: int):
-        rolling_average = cls(size=0, last_element=0, mat=jnp.zeros(size, dtype=jnp.float32))
+        zero_mat = jnp.zeros(size, dtype=jnp.float32)
+
+        rolling_average = cls(size=0, last_element=0, mat=zero_mat)
         return rolling_average
