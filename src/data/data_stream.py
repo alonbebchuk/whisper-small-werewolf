@@ -24,12 +24,12 @@ def create_process_sample_fn(config):
         attention_mask = [1] * slice_len + [0] * padding_len
         loss_mask = [0.0] * prompt_len + [1.0] * (slice_len - prompt_len) + [0.0] * padding_len
 
-        result = {
-            "input_tokens": np.array(input_tokens, dtype=np.int32),
-            "target_tokens": np.array(target_tokens, dtype=np.int32),
-            "loss_mask": np.array(loss_mask, dtype=np.float32),
-            "attention_mask": np.array(attention_mask, dtype=np.int32)
-        }
+        input_tokens = np.array(input_tokens, dtype=np.int32)
+        target_tokens = np.array(target_tokens, dtype=np.int32)
+        loss_mask = np.array(loss_mask, dtype=np.float32)
+        attention_mask = np.array(attention_mask, dtype=np.int32)
+
+        result = {"input_tokens": input_tokens, "target_tokens": target_tokens, "loss_mask": loss_mask, "attention_mask": attention_mask}
         return result
 
     return process_sample
@@ -41,18 +41,16 @@ def create_collate_fn(config):
     processor = WhisperProcessor.from_pretrained(config.model.name)
 
     def collate(batch):
-        audio_arrays = [audio.decode_example(x)["array"] for x in batch["audio"]]
+        audio_arrays = [audio.decode_example(x["audio"])["array"] for x in batch]
 
         input_features = feature_extractor(audio_arrays, sampling_rate=config.model.sampling_rate).input_features
         input_features = processor.feature_extractor.pad([{"input_features": x} for x in list(input_features)], return_tensors="np").input_features
+        decoder_input_ids = np.array([x["input_tokens"] for x in batch], dtype=np.int32)
+        target_tokens = np.array([x["target_tokens"] for x in batch], dtype=np.int32)
+        loss_mask = np.array([x["loss_mask"] for x in batch], dtype=np.float32)
+        attention_mask = np.array([x["attention_mask"] for x in batch], dtype=np.int32)
 
-        result = {
-            "input_features": input_features,
-            "decoder_input_ids": np.array(batch["input_tokens"], dtype=np.int32),
-            "target_tokens": np.array(batch["target_tokens"], dtype=np.int32),
-            "loss_mask": np.array(batch["loss_mask"], dtype=np.float32),
-            "attention_mask": np.array(batch["attention_mask"], dtype=np.int32)
-        }
+        result = {"input_features": input_features, "decoder_input_ids": decoder_input_ids, "target_tokens": target_tokens, "loss_mask": loss_mask, "attention_mask": attention_mask}
         return result
 
     return collate
@@ -75,7 +73,7 @@ class DataStream:
         val_ds = val_ds.map(process_sample_fn)
 
         collate_fn = create_collate_fn(config)
-        self.train_dl = DataLoader(train_ds, collate_fn=collate_fn, batch_size=config.training.batch_size, num_workers=20, prefetch_factor=10)
+        self.train_dl = DataLoader(train_ds, collate_fn=collate_fn, batch_size=config.training.batch_size)
         self.val_dl = DataLoader(val_ds, collate_fn=collate_fn, batch_size=config.evaluation.batch_size)
 
     def generate(self, dataloader):
