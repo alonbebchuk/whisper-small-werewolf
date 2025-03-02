@@ -1,18 +1,6 @@
 from datasets import load_dataset
-from src.common.config import get_config, get_strategy_dataset_name
+from src.common.config import get_config, get_strategy_dataset_name, prompt_with_dialogue_format, strategies
 from transformers import WhisperTokenizer
-
-
-strategies = ["Accusation", "Defense", "Evidence", "Identity Declaration", "Interrogation", "No Strategy", "Call for Action"]
-prompt_format = """Given the previous audio and the following dialogue, determine whether the last utterance in the following spoken dialogue fits under the strategy category of: {strategy}.
-Respond with a single word: Yes or No.
-Dialogue:
-```
-{dialogue}
-```
-Does the last utterance fit the strategy category {strategy}?
-Completion:
-"""
 
 
 def filter_data(config, dataset):
@@ -40,7 +28,7 @@ def create_into_prompt_completion_fn(config, strategy):
         prompt = None
         for i in range(len(sample["dialogue"])):
             curr_dialogue = "\n".join(f"{x['speaker']}: {x['utterance']}" for x in sample["dialogue"][i:])
-            curr_prompt = prompt_format.format(strategy=strategy, dialogue=curr_dialogue)
+            curr_prompt = prompt_with_dialogue_format.format(strategy=strategy, dialogue=curr_dialogue)
 
             input_ids = tokenizer.encode(curr_prompt + completion, add_special_tokens=False)
             if len(input_ids) < config.model.max_len:

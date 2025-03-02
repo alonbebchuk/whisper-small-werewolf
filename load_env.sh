@@ -2,8 +2,7 @@
 
 # Check if .env file exists
 if [ -f .env ]; then
-    # Load environment variables from .env file
-    export $(cat .env | grep -v '^#' | xargs)
+    export $(grep -v '^#' .env | xargs)
     echo "Environment variables loaded from .env file"
 else
     echo "Warning: .env file not found. Please create one using .env.template as a guide"
@@ -11,20 +10,19 @@ else
 fi
 
 # Verify required variables are set
-required_vars=("WANDB_API_KEY" "HF_TOKEN")
-missing_vars=()
+missing_vars=""
 
-for var in "${required_vars[@]}"; do
+for var in WANDB_API_KEY HF_TOKEN; do
     if [ -z "${!var}" ]; then
-        missing_vars+=("$var")
+        missing_vars="$missing_vars $var"
     fi
 done
 
-if [ ${#missing_vars[@]} -ne 0 ]; then
+if [ -n "$missing_vars" ]; then
     echo "Error: The following required environment variables are missing:"
-    printf '%s\n' "${missing_vars[@]}"
+    echo "$missing_vars"
     echo "Please set them in your .env file"
     exit 1
 fi
 
-echo "All required environment variables are set" 
+echo "All required environment variables are set"

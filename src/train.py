@@ -2,29 +2,32 @@ import os
 
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
+import argparse
 import jax
+import numpy as np
+import wandb
 
-# import wandb
 
-
-from src.common.config import get_config, get_strategy_dataset_name
+from src.common.config import get_config, get_model_name
 from src.common.lr_schedule import create_learning_rate_schedule
 from src.data.data_stream import DataStream
 from src.evaluation.eval_step import eval_step
-from src.model.whisper import FlaxWhisperForConditionalGeneration
+from src.models.whisper import FlaxWhisperForConditionalGeneration
 from src.training.train_state import create_train_state
 from src.training.train_step import train_step
 from tqdm.auto import tqdm
 
 
-def main(strategy):
+def train(use_audio, use_dialogue):
     config = get_config()
 
-    # worker_id = jax.process_index()
-    # if worker_id == 0:
-    #     wandb.init(project=f"vit_jax_{get_strategy_dataset_name(config, strategy)}", config=config.to_dict())
+    model_name = get_model_name(config, use_audio, use_dialogue)
 
-    stream = DataStream(config, strategy)
+    worker_id = jax.process_index()
+    if worker_id == 0:
+        wandb.init(entity="alonbebchuk-tel-aviv-university", project=model_name, config=config.to_dict())
+
+    stream = DataStream(config, use_audio, use_dialogue)
 
     lr_schedule = create_learning_rate_schedule(config)
 
@@ -32,6 +35,7 @@ def main(strategy):
 
     state = create_train_state(config, model, lr_schedule)
     state = state.replicate()
+
     p_train_step = jax.pmap(train_step, "batch", donate_argnums=(0,))
     p_eval_step = jax.pmap(eval_step, "batch", donate_argnums=tuple())
 
@@ -60,15 +64,22 @@ def main(strategy):
                 curr_loss = curr_loss.mean().item()
                 curr_acc = curr_acc.mean().item()
 
-            # if worker_id == 0:
-            #     wandb.log({"eval_loss": curr_loss, "eval_accuracy": curr_acc, "epoch": epoch, "step": step})
+            if worker_id == 0:
+                wandb.log({"eval_loss": curr_loss, "eval_accuracy": curr_acc, "epoch": epoch, "step": step})
             print({"eval_loss": curr_loss, "eval_accuracy": curr_acc, "epoch": epoch, "step": step})
 
-    #     if worker_id == 0:
-    #         wandb.log(metrics)
-    # if worker_id == 0:
-    #     wandb.finish()
+        if worker_id == 0:
+            wandb.log(metrics)
+    if worker_id == 0:
+        wandb.finish()
+        params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state.params))
+        model.save_pretrained(os.path.join(os.path.dirname(__file__), f"model/{model_name}"), params=params)
 
 
 if __name__ == "__main__":
-    main("Accusation")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--use_audio", type=bool, required=True)
+    parser.add_argument("--use_dialogue", type=bool, required=True)
+    args = parser.parse_args()
+
+    train(args.use_audio, args.use_dialogue)
