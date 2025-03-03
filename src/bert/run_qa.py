@@ -303,18 +303,25 @@ def main():
             context_dialogue = context_dialogue[-256:]
         return context_prefix + context_dialogue
 
-    def sample_to_answer(strategy, dialogue):
+    def strategy_and_dialogue_to_answer(strategy, dialogue):
         answer = {"text": ["Yes"], "answer_start": [28]} if strategy in dialogue[-1]["target"].split(", ") else {"text": ["No"], "answer_start": [35]}
         return answer
+    
+    def file_name_and_idx_to_id(file_name, idx):
+        parts = file_name.split("_")
+        file_num = parts[1]
+        game = parts[2]
+        id = f"File{file_num}-{game}-Idx{idx}"
+        return id
 
     def prepare_features(examples):
         examples["question"] = [strategy_to_question(strategy) for strategy in examples["strategy"]]
         examples["context"] = [dialogue_to_context(dialogue) for dialogue in examples["dialogue"]]
-        examples["answers"] = [sample_to_answer(strategy, dialogue) for (strategy, dialogue) in zip(examples["strategy"], examples["dialogue"])]
+        examples["answers"] = [strategy_and_dialogue_to_answer(strategy, dialogue) for (strategy, dialogue) in zip(examples["strategy"], examples["dialogue"])]
+        examples["id"] = [file_name_and_idx_to_id(file_name, idx) for (file_name, idx) in zip(examples["file_name"], examples["idx"])]
         return examples
 
     raw_datasets = datasets.load_dataset(get_strategy_dataset_name(strategies[0]))
-    raw_datasets = raw_datasets.rename_column("idx", "id")
     raw_datasets = raw_datasets.map(prepare_features, batched=True, num_proc=10)
     # raw_datasets = datasets.DatasetDict()
 
