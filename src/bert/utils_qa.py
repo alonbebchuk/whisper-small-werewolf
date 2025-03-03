@@ -33,10 +33,8 @@ def postprocess_qa_predictions(
     examples,
     features,
     predictions: Tuple[np.ndarray, np.ndarray],
-    version_2_with_negative: bool = False,
     n_best_size: int = 20,
     max_answer_length: int = 30,
-    null_score_diff_threshold: float = 0.0,
     output_dir: Optional[str] = None,
     prefix: Optional[str] = None,
     log_level: Optional[int] = logging.WARNING,
@@ -51,24 +49,13 @@ def postprocess_qa_predictions(
         predictions (:obj:`Tuple[np.ndarray, np.ndarray]`):
             The predictions of the model: two arrays containing the start logits and the end logits respectively. Its
             first dimension must match the number of elements of :obj:`features`.
-        version_2_with_negative (:obj:`bool`, `optional`, defaults to :obj:`False`):
-            Whether or not the underlying dataset contains examples with no answers.
         n_best_size (:obj:`int`, `optional`, defaults to 20):
             The total number of n-best predictions to generate when looking for an answer.
         max_answer_length (:obj:`int`, `optional`, defaults to 30):
             The maximum length of an answer that can be generated. This is needed because the start and end predictions
             are not conditioned on one another.
-        null_score_diff_threshold (:obj:`float`, `optional`, defaults to 0):
-            The threshold used to select the null answer: if the best answer has a score that is less than the score of
-            the null answer minus this threshold, the null answer is selected for this example (note that the score of
-            the null answer for an example giving several features is the minimum of the scores for the null answer on
-            each feature: all features must be aligned on the fact they `want` to predict a null answer).
-
-            Only useful when :obj:`version_2_with_negative` is :obj:`True`.
         output_dir (:obj:`str`, `optional`):
-            If provided, the dictionaries of predictions, n_best predictions (with their scores and logits) and, if
-            :obj:`version_2_with_negative=True`, the dictionary of the scores differences between best and null
-            answers, are saved in `output_dir`.
+            If provided, the dictionaries of predictions, n_best predictions (with their scores and logits) are saved in `output_dir`.
         prefix (:obj:`str`, `optional`):
             If provided, the dictionaries mentioned above are saved with `prefix` added to their names.
         log_level (:obj:`int`, `optional`, defaults to ``logging.WARNING``):
@@ -90,8 +77,6 @@ def postprocess_qa_predictions(
     # The dictionaries we have to fill.
     all_predictions = collections.OrderedDict()
     all_nbest_json = collections.OrderedDict()
-    if version_2_with_negative:
-        scores_diff_json = collections.OrderedDict()
 
     # Logging.
     logger.setLevel(log_level)
@@ -134,14 +119,7 @@ def postprocess_qa_predictions(
                 for end_index in end_indexes:
                     # Don't consider out-of-scope answers, either because the indices are out of bounds or correspond
                     # to part of the input_ids that are not in the context.
-                    if (
-                        start_index >= len(offset_mapping)
-                        or end_index >= len(offset_mapping)
-                        or offset_mapping[start_index] is None
-                        or len(offset_mapping[start_index]) < 2
-                        or offset_mapping[end_index] is None
-                        or len(offset_mapping[end_index]) < 2
-                    ):
+                    if start_index >= len(offset_mapping) or end_index >= len(offset_mapping) or offset_mapping[start_index] is None or len(offset_mapping[start_index]) < 2 or offset_mapping[end_index] is None or len(offset_mapping[end_index]) < 2:
                         continue
                     # Don't consider answers with a length that is either < 0 or > max_answer_length.
                     if end_index < start_index or end_index - start_index + 1 > max_answer_length:
@@ -159,21 +137,9 @@ def postprocess_qa_predictions(
                             "end_logit": end_logits[end_index],
                         }
                     )
-        if version_2_with_negative and min_null_prediction is not None:
-            # Add the minimum null prediction
-            prelim_predictions.append(min_null_prediction)
-            null_score = min_null_prediction["score"]
 
         # Only keep the best `n_best_size` predictions.
         predictions = sorted(prelim_predictions, key=lambda x: x["score"], reverse=True)[:n_best_size]
-
-        # Add back the minimum null prediction if it was removed because of its low score.
-        if (
-            version_2_with_negative
-            and min_null_prediction is not None
-            and not any(p["offsets"] == (0, 0) for p in predictions)
-        ):
-            predictions.append(min_null_prediction)
 
         # Use the offsets to gather the answer text in the original context.
         context = example["context"]
@@ -196,45 +162,19 @@ def postprocess_qa_predictions(
         for prob, pred in zip(probs, predictions):
             pred["probability"] = prob
 
-        # Pick the best prediction. If the null answer is not possible, this is easy.
-        if not version_2_with_negative:
-            all_predictions[example["id"]] = predictions[0]["text"]
-        else:
-            # Otherwise we first need to find the best non-empty prediction.
-            i = 0
-            while predictions[i]["text"] == "":
-                i += 1
-            best_non_null_pred = predictions[i]
-
-            # Then we compare to the null prediction using the threshold.
-            score_diff = null_score - best_non_null_pred["start_logit"] - best_non_null_pred["end_logit"]
-            scores_diff_json[example["id"]] = float(score_diff)  # To be JSON-serializable.
-            if score_diff > null_score_diff_threshold:
-                all_predictions[example["id"]] = ""
-            else:
-                all_predictions[example["id"]] = best_non_null_pred["text"]
+        # Pick the best prediction.
+        all_predictions[example["id"]] = predictions[0]["text"]
 
         # Make `predictions` JSON-serializable by casting np.float back to float.
-        all_nbest_json[example["id"]] = [
-            {k: (float(v) if isinstance(v, (np.float16, np.float32, np.float64)) else v) for k, v in pred.items()}
-            for pred in predictions
-        ]
+        all_nbest_json[example["id"]] = [{k: (float(v) if isinstance(v, (np.float16, np.float32, np.float64)) else v) for k, v in pred.items()} for pred in predictions]
 
     # If we have an output_dir, let's save all those dicts.
     if output_dir is not None:
         if not os.path.isdir(output_dir):
             raise EnvironmentError(f"{output_dir} is not a directory.")
 
-        prediction_file = os.path.join(
-            output_dir, "predictions.json" if prefix is None else f"{prefix}_predictions.json"
-        )
-        nbest_file = os.path.join(
-            output_dir, "nbest_predictions.json" if prefix is None else f"{prefix}_nbest_predictions.json"
-        )
-        if version_2_with_negative:
-            null_odds_file = os.path.join(
-                output_dir, "null_odds.json" if prefix is None else f"{prefix}_null_odds.json"
-            )
+        prediction_file = os.path.join(output_dir, "predictions.json" if prefix is None else f"{prefix}_predictions.json")
+        nbest_file = os.path.join(output_dir, "nbest_predictions.json" if prefix is None else f"{prefix}_nbest_predictions.json")
 
         logger.info(f"Saving predictions to {prediction_file}.")
         with open(prediction_file, "w") as writer:
@@ -242,10 +182,6 @@ def postprocess_qa_predictions(
         logger.info(f"Saving nbest_preds to {nbest_file}.")
         with open(nbest_file, "w") as writer:
             writer.write(json.dumps(all_nbest_json, indent=4) + "\n")
-        if version_2_with_negative:
-            logger.info(f"Saving null_odds to {null_odds_file}.")
-            with open(null_odds_file, "w") as writer:
-                writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
 
     return all_predictions
 
@@ -254,7 +190,6 @@ def postprocess_qa_predictions_with_beam_search(
     examples,
     features,
     predictions: Tuple[np.ndarray, np.ndarray],
-    version_2_with_negative: bool = False,
     n_best_size: int = 20,
     max_answer_length: int = 30,
     start_n_top: int = 5,
@@ -274,8 +209,6 @@ def postprocess_qa_predictions_with_beam_search(
         predictions (:obj:`Tuple[np.ndarray, np.ndarray]`):
             The predictions of the model: two arrays containing the start logits and the end logits respectively. Its
             first dimension must match the number of elements of :obj:`features`.
-        version_2_with_negative (:obj:`bool`, `optional`, defaults to :obj:`False`):
-            Whether or not the underlying dataset contains examples with no answers.
         n_best_size (:obj:`int`, `optional`, defaults to 20):
             The total number of n-best predictions to generate when looking for an answer.
         max_answer_length (:obj:`int`, `optional`, defaults to 30):
@@ -286,9 +219,7 @@ def postprocess_qa_predictions_with_beam_search(
         end_n_top (:obj:`int`, `optional`, defaults to 5):
             The number of top end logits too keep when searching for the :obj:`n_best_size` predictions.
         output_dir (:obj:`str`, `optional`):
-            If provided, the dictionaries of predictions, n_best predictions (with their scores and logits) and, if
-            :obj:`version_2_with_negative=True`, the dictionary of the scores differences between best and null
-            answers, are saved in `output_dir`.
+            If provided, the dictionaries of predictions, n_best predictions (with their scores and logits) are saved in `output_dir`.
         prefix (:obj:`str`, `optional`):
             If provided, the dictionaries mentioned above are saved with `prefix` added to their names.
         log_level (:obj:`int`, `optional`, defaults to ``logging.WARNING``):
@@ -310,7 +241,7 @@ def postprocess_qa_predictions_with_beam_search(
     # The dictionaries we have to fill.
     all_predictions = collections.OrderedDict()
     all_nbest_json = collections.OrderedDict()
-    scores_diff_json = collections.OrderedDict() if version_2_with_negative else None
+    scores_diff_json = None
 
     # Logging.
     logger.setLevel(log_level)
@@ -351,14 +282,7 @@ def postprocess_qa_predictions_with_beam_search(
                     end_index = int(end_indexes[j_index])
                     # Don't consider out-of-scope answers (last part of the test should be unnecessary because of the
                     # p_mask but let's not take any risk)
-                    if (
-                        start_index >= len(offset_mapping)
-                        or end_index >= len(offset_mapping)
-                        or offset_mapping[start_index] is None
-                        or len(offset_mapping[start_index]) < 2
-                        or offset_mapping[end_index] is None
-                        or len(offset_mapping[end_index]) < 2
-                    ):
+                    if start_index >= len(offset_mapping) or end_index >= len(offset_mapping) or offset_mapping[start_index] is None or len(offset_mapping[start_index]) < 2 or offset_mapping[end_index] is None or len(offset_mapping[end_index]) < 2:
                         continue
 
                     # Don't consider answers with a length negative or > max_answer_length.
@@ -405,30 +329,17 @@ def postprocess_qa_predictions_with_beam_search(
 
         # Pick the best prediction and set the probability for the null answer.
         all_predictions[example["id"]] = predictions[0]["text"]
-        if version_2_with_negative:
-            scores_diff_json[example["id"]] = float(min_null_score)
 
         # Make `predictions` JSON-serializable by casting np.float back to float.
-        all_nbest_json[example["id"]] = [
-            {k: (float(v) if isinstance(v, (np.float16, np.float32, np.float64)) else v) for k, v in pred.items()}
-            for pred in predictions
-        ]
+        all_nbest_json[example["id"]] = [{k: (float(v) if isinstance(v, (np.float16, np.float32, np.float64)) else v) for k, v in pred.items()} for pred in predictions]
 
     # If we have an output_dir, let's save all those dicts.
     if output_dir is not None:
         if not os.path.isdir(output_dir):
             raise EnvironmentError(f"{output_dir} is not a directory.")
 
-        prediction_file = os.path.join(
-            output_dir, "predictions.json" if prefix is None else f"{prefix}_predictions.json"
-        )
-        nbest_file = os.path.join(
-            output_dir, "nbest_predictions.json" if prefix is None else f"{prefix}_nbest_predictions.json"
-        )
-        if version_2_with_negative:
-            null_odds_file = os.path.join(
-                output_dir, "null_odds.json" if prefix is None else f"{prefix}_null_odds.json"
-            )
+        prediction_file = os.path.join(output_dir, "predictions.json" if prefix is None else f"{prefix}_predictions.json")
+        nbest_file = os.path.join(output_dir, "nbest_predictions.json" if prefix is None else f"{prefix}_nbest_predictions.json")
 
         logger.info(f"Saving predictions to {prediction_file}.")
         with open(prediction_file, "w") as writer:
@@ -436,9 +347,5 @@ def postprocess_qa_predictions_with_beam_search(
         logger.info(f"Saving nbest_preds to {nbest_file}.")
         with open(nbest_file, "w") as writer:
             writer.write(json.dumps(all_nbest_json, indent=4) + "\n")
-        if version_2_with_negative:
-            logger.info(f"Saving null_odds to {null_odds_file}.")
-            with open(null_odds_file, "w") as writer:
-                writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
 
     return all_predictions, scores_diff_json

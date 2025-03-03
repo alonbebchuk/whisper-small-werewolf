@@ -27,7 +27,6 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import datasets
@@ -42,7 +41,7 @@ from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard
 from huggingface_hub import HfApi
 from src.bert.utils_qa import postprocess_qa_predictions
-from src.common.config import get_strategy_dataset_name, strategies
+from src.common.config import strategies
 from tqdm import tqdm
 
 
@@ -92,8 +91,6 @@ class TrainingArguments:
     eval_steps: int = field(default=None, metadata={"help": "Run an evaluation every X steps."})
     seed: int = field(default=42, metadata={"help": "Random seed that will be set at the beginning of training."})
     push_to_hub: bool = field(default=False, metadata={"help": "Whether or not to upload the trained model to the model hub after training."})
-    hub_model_id: str = field(default=None, metadata={"help": "The name of the repository to keep in sync with the local `output_dir`."})
-    hub_token: str = field(default=None, metadata={"help": "The token to use to push to the Model Hub."})
 
     def __post_init__(self):
         if self.output_dir is not None:
@@ -122,13 +119,6 @@ class ModelArguments:
     """
 
     model_name_or_path: str = field(metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"})
-    config_name: Optional[str] = field(default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"})
-    tokenizer_name: Optional[str] = field(default=None, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"})
-    cache_dir: Optional[str] = field(default=None, metadata={"help": "Path to directory to store the pretrained models downloaded from huggingface.co"})
-    model_revision: str = field(default="main", metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."})
-    token: str = field(default=None, metadata={"help": ("The token to use as HTTP bearer authorization for remote files. If not specified, will use the token generated when running `huggingface-cli login` (stored in `~/.huggingface`).")})
-    trust_remote_code: bool = field(default=False, metadata={"help": ("Whether to trust the execution of code from datasets/models defined on the Hub. This option should only be set to `True` for repositories you trust and in which you have read the code, as it will execute code present on the Hub on your local machine.")})
-    dtype: Optional[str] = field(default="float32", metadata={"help": ("Floating-point format in which the model weights should be initialized and trained. Choose one of `[float32, float16, bfloat16]`.")})
 
 
 @dataclass
@@ -137,15 +127,8 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
-    overwrite_cache: bool = field(default=False, metadata={"help": "Overwrite the cached training and evaluation sets"})
     preprocessing_num_workers: Optional[int] = field(default=None, metadata={"help": "The number of processes to use for the preprocessing."})
-    max_seq_length: int = field(default=384, metadata={"help": ("The maximum total input sequence length after tokenization. Sequences longer than this will be truncated, sequences shorter will be padded.")})
-    pad_to_max_length: bool = field(default=False, metadata={"help": ("Whether to pad all samples to `max_seq_length`. If False, will pad the samples dynamically when batching to the maximum length in the batch (which can be faster on GPU but will be slower on TPU).")})
-    max_train_samples: Optional[int] = field(default=None, metadata={"help": ("For debugging purposes or quicker training, truncate the number of training examples to this value if set.")})
-    max_eval_samples: Optional[int] = field(default=None, metadata={"help": ("For debugging purposes or quicker training, truncate the number of evaluation examples to this value if set.")})
-    max_predict_samples: Optional[int] = field(default=None, metadata={"help": ("For debugging purposes or quicker training, truncate the number of prediction examples to this value if set.")})
-    version_2_with_negative: bool = field(default=False, metadata={"help": "If true, some of the examples do not have an answer."})
-    null_score_diff_threshold: float = field(default=0.0, metadata={"help": ("The threshold used to select the null answer: if the best answer has a score that is less than the score of the null answer minus this threshold, the null answer is selected for this example. Only useful when `version_2_with_negative=True`.")})
+    max_seq_length: int = field(default=384, metadata={"help": ("The maximum total input sequence length after tokenization. Sequences longer " "than this will be truncated, sequences shorter will be padded.")})
     doc_stride: int = field(default=128, metadata={"help": "When splitting up a long document into chunks, how much stride to take between chunks."})
     n_best_size: int = field(default=20, metadata={"help": "The total number of n-best predictions to generate when looking for an answer."})
     max_answer_length: int = field(default=30, metadata={"help": ("The maximum length of an answer that can be generated. This is needed because the start and end predictions are not conditioned on one another.")})
@@ -304,45 +287,48 @@ def main():
         transformers.utils.logging.set_verbosity_error()
     # endregion
 
-    # Handle the repository creation
-    if training_args.push_to_hub:
-        # Retrieve of infer repo_name
-        repo_name = training_args.hub_model_id
-        if repo_name is None:
-            repo_name = Path(training_args.output_dir).absolute().name
-        # Create repo and retrieve repo_id
-        api = HfApi()
-        repo_id = api.create_repo(repo_name, exist_ok=True, token=training_args.hub_token).repo_id
-
     # region Load Data
     def get_strategy_dataset_name(strategy):
         strategy_dataset_name = f"alonbeb/werewolf_{strategy.replace(' ', '-')}_data"
         return strategy_dataset_name
 
-    raw_datasets = datasets.DatasetDict()
-    raw_datasets["train"] = datasets.interleave_datasets([datasets.load_dataset(get_strategy_dataset_name(strategy), split="train", streaming=True) for strategy in strategies])
-    raw_datasets["validation"] = datasets.interleave_datasets([datasets.load_dataset(get_strategy_dataset_name(strategy), split="validation", streaming=True) for strategy in strategies])
-    raw_datasets["test"] = datasets.interleave_datasets([datasets.load_dataset(get_strategy_dataset_name(strategy), split="test", streaming=True) for strategy in strategies])
+    def strategy_to_question(strategy):
+        question = f"Does the last utterance fit the strategy category '{strategy}'?"
+        return question
+
+    def dialogue_to_context(dialogue):
+        context_prefix = "Respond with a single word: Yes or No.\n"
+        context_dialogue = "\n".join(f"{x['speaker']}: {x['utterance']}" for x in dialogue[:-2])
+        if len(context_dialogue) > 256:
+            context_dialogue = context_dialogue[-256:]
+        return context_prefix + context_dialogue
+
+    def sample_to_answer(strategy, dialogue):
+        answer = {"text": ["Yes"], "answer_start": [28]} if strategy in dialogue[-1]["target"].split(", ") else {"text": ["No"], "answer_start": [35]}
+        return answer
+
+    def prepare_features(examples):
+        examples["question"] = [strategy_to_question(strategy) for strategy in examples["strategy"]]
+        examples["context"] = [dialogue_to_context(dialogue) for dialogue in examples["dialogue"]]
+        examples["answers"] = [sample_to_answer(strategy, dialogue) for (strategy, dialogue) in zip(examples["strategy"], examples["dialogue"])]
+        return examples
+
+    raw_datasets = datasets.load_dataset(get_strategy_dataset_name(strategies[0]))
+    raw_datasets = raw_datasets.rename_column("idx", "id")
+    raw_datasets = raw_datasets.map(prepare_features, batched=True, num_proc=10)
+    # raw_datasets = datasets.DatasetDict()
+
+    # strategy_datasets = [datasets.load_dataset(get_strategy_dataset_name(strategy), num_proc=10) for strategy in strategies]
+    # raw_datasets["train"] = datasets.concatenate_datasets([raw_dataset["train"] for raw_dataset in strategy_datasets])
+    # raw_datasets["validation"] = datasets.concatenate_datasets([raw_dataset["validation"] for raw_dataset in strategy_datasets])
+    # raw_datasets["test"] = datasets.concatenate_datasets([raw_dataset["test"] for raw_dataset in strategy_datasets])
     # endregion
 
     # region Load pretrained model and tokenizer
     #
     # Load pretrained model and tokenizer
-    config = AutoConfig.from_pretrained(
-        model_args.config_name if model_args.config_name else model_args.model_name_or_path,
-        cache_dir=model_args.cache_dir,
-        revision=model_args.model_revision,
-        token=model_args.token,
-        trust_remote_code=model_args.trust_remote_code,
-    )
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
-        cache_dir=model_args.cache_dir,
-        use_fast=True,
-        revision=model_args.model_revision,
-        token=model_args.token,
-        trust_remote_code=model_args.trust_remote_code,
-    )
+    config = AutoConfig.from_pretrained(model_args.model_name_or_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, use_fast=True)
     # endregion
 
     # region Tokenizer check: this script requires a fast tokenizer.
@@ -358,43 +344,20 @@ def main():
         column_names = raw_datasets["validation"].column_names
     else:
         column_names = raw_datasets["test"].column_names
-    question_column_name = "question"
-
-    def sample_to_question(sample):
-        question = f"Respond with a single word: Yes or No. Does the last utterance fit the strategy category '{sample['strategy']}'?"
-        return question
-
-    context_column_name = "context"
-
-    def sample_to_context(sample):
-        dialogue = "\n".join(f"{x['speaker']}: {x['utterance']}" for x in sample["dialogue"])
-        return dialogue
-
-    answer_column_name = "answers"
-
-    def sample_to_answer(sample):
-        answer = "Yes" if sample["strategy"] in sample["dialogue"][-1]["target"].split(", ") else "No"
-        return answer
 
     # Padding side determines if we do (question|context) or (context|question).
     pad_on_right = tokenizer.padding_side == "right"
 
-    if data_args.max_seq_length > tokenizer.model_max_length:
-        logger.warning(f"The max_seq_length passed ({data_args.max_seq_length}) is larger than the maximum length for the " f"model ({tokenizer.model_max_length}). Using max_seq_length={tokenizer.model_max_length}.")
     max_seq_length = min(data_args.max_seq_length, tokenizer.model_max_length)
 
     # Training preprocessing
     def prepare_train_features(examples):
-        examples[question_column_name] = [sample_to_question(sample) for sample in examples]
-        examples[context_column_name] = [sample_to_context(sample) for sample in examples]
-        examples[answer_column_name] = [sample_to_answer(sample) for sample in examples]
-
         # Tokenize our examples with truncation and maybe padding, but keep the overflows using a stride. This results
         # in one example possible giving several features when a context is long, each of those features having a
         # context that overlaps a bit the context of the previous feature.
         tokenized_examples = tokenizer(
-            examples[question_column_name if pad_on_right else context_column_name],
-            examples[context_column_name if pad_on_right else question_column_name],
+            examples["question" if pad_on_right else "context"],
+            examples["context" if pad_on_right else "question"],
             truncation="only_second" if pad_on_right else "only_first",
             max_length=max_seq_length,
             stride=data_args.doc_stride,
@@ -424,77 +387,53 @@ def main():
 
             # One example can give several spans, this is the index of the example containing this span of text.
             sample_index = sample_mapping[i]
-            answers = examples[answer_column_name][sample_index]
-            # If no answers are given, set the cls_index as answer.
-            if len(answers["answer_start"]) == 0:
+            answers = examples["answers"][sample_index]
+            # Start/end character index of the answer in the text.
+            start_char = answers["answer_start"][0]
+            end_char = start_char + len(answers["text"][0])
+
+            # Start token index of the current span in the text.
+            token_start_index = 0
+            while sequence_ids[token_start_index] != (1 if pad_on_right else 0):
+                token_start_index += 1
+
+            # End token index of the current span in the text.
+            token_end_index = len(input_ids) - 1
+            while sequence_ids[token_end_index] != (1 if pad_on_right else 0):
+                token_end_index -= 1
+
+            # Detect if the answer is out of the span (in which case this feature is labeled with the CLS index).
+            if not (offsets[token_start_index][0] <= start_char and offsets[token_end_index][1] >= end_char):
                 tokenized_examples["start_positions"].append(cls_index)
                 tokenized_examples["end_positions"].append(cls_index)
             else:
-                # Start/end character index of the answer in the text.
-                start_char = answers["answer_start"][0]
-                end_char = start_char + len(answers["text"][0])
-
-                # Start token index of the current span in the text.
-                token_start_index = 0
-                while sequence_ids[token_start_index] != (1 if pad_on_right else 0):
+                # Otherwise move the token_start_index and token_end_index to the two ends of the answer.
+                # Note: we could go after the last offset if the answer is the last word (edge case).
+                while token_start_index < len(offsets) and offsets[token_start_index][0] <= start_char:
                     token_start_index += 1
-
-                # End token index of the current span in the text.
-                token_end_index = len(input_ids) - 1
-                while sequence_ids[token_end_index] != (1 if pad_on_right else 0):
+                tokenized_examples["start_positions"].append(token_start_index - 1)
+                while offsets[token_end_index][1] >= end_char:
                     token_end_index -= 1
-
-                # Detect if the answer is out of the span (in which case this feature is labeled with the CLS index).
-                if not (offsets[token_start_index][0] <= start_char and offsets[token_end_index][1] >= end_char):
-                    tokenized_examples["start_positions"].append(cls_index)
-                    tokenized_examples["end_positions"].append(cls_index)
-                else:
-                    # Otherwise move the token_start_index and token_end_index to the two ends of the answer.
-                    # Note: we could go after the last offset if the answer is the last word (edge case).
-                    while token_start_index < len(offsets) and offsets[token_start_index][0] <= start_char:
-                        token_start_index += 1
-                    tokenized_examples["start_positions"].append(token_start_index - 1)
-                    while offsets[token_end_index][1] >= end_char:
-                        token_end_index -= 1
-                    tokenized_examples["end_positions"].append(token_end_index + 1)
+                tokenized_examples["end_positions"].append(token_end_index + 1)
 
         return tokenized_examples
 
     processed_raw_datasets = {}
     if training_args.do_train:
-        if "train" not in raw_datasets:
-            raise ValueError("--do_train requires a train dataset")
-        train_dataset = raw_datasets["train"]
-        if data_args.max_train_samples is not None:
-            # We will select sample from whole data if argument is specified
-            max_train_samples = min(len(train_dataset), data_args.max_train_samples)
-            train_dataset = train_dataset.select(range(max_train_samples))
         # Create train feature from dataset
-        train_dataset = train_dataset.map(
-            prepare_train_features,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not data_args.overwrite_cache,
-        )
-        if data_args.max_train_samples is not None:
-            # Number of samples might increase during Feature Creation, We select only specified max samples
-            max_train_samples = min(len(train_dataset), data_args.max_train_samples)
-            train_dataset = train_dataset.select(range(max_train_samples))
+        train_dataset = raw_datasets["train"].shard(num_shards=jax.process_count(), index=jax.process_index())
+        train_dataset = train_dataset.map(prepare_train_features, batched=True, remove_columns=column_names, num_proc=10)
+        # train_dataset = datasets.Dataset.from_generator(lambda: (yield from train_dataset), features=train_dataset.features)
         processed_raw_datasets["train"] = train_dataset
 
     # Validation preprocessing
     def prepare_validation_features(examples):
-        examples[question_column_name] = [sample_to_question(sample) for sample in examples]
-        examples[context_column_name] = [sample_to_context(sample) for sample in examples]
-        examples[answer_column_name] = [sample_to_answer(sample) for sample in examples]
-
         # Tokenize our examples with truncation and maybe padding, but keep the overflows using a stride. This results
         # in one example possible giving several features when a context is long, each of those features having a
         # context that overlaps a bit the context of the previous feature.
         tokenized_examples = tokenizer(
-            examples[question_column_name if pad_on_right else context_column_name],
-            examples[context_column_name if pad_on_right else question_column_name],
+            examples["question" if pad_on_right else "context"],
+            examples["context" if pad_on_right else "question"],
             truncation="only_second" if pad_on_right else "only_first",
             max_length=max_seq_length,
             stride=data_args.doc_stride,
@@ -527,46 +466,17 @@ def main():
         return tokenized_examples
 
     if training_args.do_eval:
-        if "validation" not in raw_datasets:
-            raise ValueError("--do_eval requires a validation dataset")
-        eval_examples = raw_datasets["validation"]
-        if data_args.max_eval_samples is not None:
-            # We will select sample from whole data
-            max_eval_samples = min(len(eval_examples), data_args.max_eval_samples)
-            eval_examples = eval_examples.select(range(max_eval_samples))
+        eval_examples = raw_datasets["validation"].shard(num_shards=jax.process_count(), index=jax.process_index())
         # Validation Feature Creation
-        eval_dataset = eval_examples.map(
-            prepare_validation_features,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not data_args.overwrite_cache,
-        )
-        if data_args.max_eval_samples is not None:
-            # During Feature creation dataset samples might increase, we will select required samples again
-            max_eval_samples = min(len(eval_dataset), data_args.max_eval_samples)
-            eval_dataset = eval_dataset.select(range(max_eval_samples))
+        eval_dataset = eval_examples.map(prepare_validation_features, batched=True, remove_columns=column_names, num_proc=10)
+        # eval_dataset = datasets.Dataset.from_generator(lambda: (yield from eval_dataset), features=eval_dataset.features)
         processed_raw_datasets["validation"] = eval_dataset
 
     if training_args.do_predict:
-        if "test" not in raw_datasets:
-            raise ValueError("--do_predict requires a test dataset")
-        predict_examples = raw_datasets["test"]
-        if data_args.max_predict_samples is not None:
-            # We will select sample from whole data
-            predict_examples = predict_examples.select(range(data_args.max_predict_samples))
+        predict_examples = raw_datasets["test"].shard(num_shards=jax.process_count(), index=jax.process_index())
         # Predict Feature Creation
-        predict_dataset = predict_examples.map(
-            prepare_validation_features,
-            batched=True,
-            num_proc=data_args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not data_args.overwrite_cache,
-        )
-        if data_args.max_predict_samples is not None:
-            # During Feature creation dataset samples might increase, we will select required samples again
-            max_predict_samples = min(len(predict_dataset), data_args.max_predict_samples)
-            predict_dataset = predict_dataset.select(range(max_predict_samples))
+        predict_dataset = predict_examples.map(prepare_validation_features, batched=True, remove_columns=column_names, num_proc=10)
+        # predict_dataset = datasets.Dataset.from_generator(lambda: (yield from predict_dataset), features=predict_dataset.features)
         processed_raw_datasets["test"] = predict_dataset
     # endregion
 
@@ -577,23 +487,18 @@ def main():
             examples=examples,
             features=features,
             predictions=predictions,
-            version_2_with_negative=data_args.version_2_with_negative,
             n_best_size=data_args.n_best_size,
             max_answer_length=data_args.max_answer_length,
-            null_score_diff_threshold=data_args.null_score_diff_threshold,
             output_dir=training_args.output_dir,
             prefix=stage,
         )
         # Format the result to the format the metric expects.
-        if data_args.version_2_with_negative:
-            formatted_predictions = [{"id": k, "prediction_text": v, "no_answer_probability": 0.0} for k, v in predictions.items()]
-        else:
-            formatted_predictions = [{"id": k, "prediction_text": v} for k, v in predictions.items()]
+        formatted_predictions = [{"id": k, "prediction_text": v} for k, v in predictions.items()]
 
-        references = [{"id": ex["id"], "answers": ex[answer_column_name]} for ex in examples]
+        references = [{"id": ex["id"], "answers": ex["answers"]} for ex in examples]
         return EvalPrediction(predictions=formatted_predictions, label_ids=references)
 
-    metric = evaluate.load("squad_v2" if data_args.version_2_with_negative else "squad", cache_dir=model_args.cache_dir)
+    metric = evaluate.load("squad")
 
     def compute_metrics(p: EvalPrediction):
         return metric.compute(predictions=p.predictions, references=p.label_ids)
@@ -678,16 +583,7 @@ def main():
     # endregion
 
     # region Load model
-    model = FlaxAutoModelForQuestionAnswering.from_pretrained(
-        model_args.model_name_or_path,
-        config=config,
-        cache_dir=model_args.cache_dir,
-        revision=model_args.model_revision,
-        token=model_args.token,
-        trust_remote_code=model_args.trust_remote_code,
-        seed=training_args.seed,
-        dtype=getattr(jnp, model_args.dtype),
-    )
+    model = FlaxAutoModelForQuestionAnswering.from_pretrained(model_args.model_name_or_path, config=config, seed=training_args.seed, dtype=getattr(jnp, "float32"))
 
     learning_rate_fn = create_learning_rate_fn(
         len(train_dataset),
@@ -818,13 +714,10 @@ def main():
                     model.save_pretrained(training_args.output_dir, params=params)
                     tokenizer.save_pretrained(training_args.output_dir)
                     if training_args.push_to_hub:
-                        api.upload_folder(
-                            commit_message=f"Saving weights and logs of step {cur_step}",
-                            folder_path=training_args.output_dir,
-                            repo_id=repo_id,
-                            repo_type="model",
-                            token=training_args.hub_token,
-                        )
+                        # Create repo and retrieve repo_id
+                        api = HfApi()
+                        repo_id = api.create_repo("bert-werewolf", exist_ok=True).repo_id
+                        api.upload_folder(commit_message=f"Saving weights and logs of step {cur_step}", folder_path=training_args.output_dir, repo_id=repo_id, repo_type="model")
         epochs.desc = f"Epoch ... {epoch + 1}/{num_epochs}"
     # endregion
 
