@@ -72,7 +72,6 @@ PRNGKey = Any
 @dataclass
 class TrainingArguments:
     output_dir: str = field(metadata={"help": "The output directory where the model predictions and checkpoints will be written."})
-    overwrite_output_dir: bool = field(default=False, metadata={"help": ("Overwrite the content of the output directory. Use this to continue training if output_dir points to a checkpoint directory.")})
     do_train: bool = field(default=False, metadata={"help": "Whether to run training."})
     do_eval: bool = field(default=False, metadata={"help": "Whether to run eval on the dev set."})
     do_predict: bool = field(default=False, metadata={"help": "Whether to run predictions on the test set."})
@@ -93,8 +92,7 @@ class TrainingArguments:
     push_to_hub: bool = field(default=False, metadata={"help": "Whether or not to upload the trained model to the model hub after training."})
 
     def __post_init__(self):
-        if self.output_dir is not None:
-            self.output_dir = os.path.expanduser(self.output_dir)
+        self.output_dir = os.path.expanduser(self.output_dir)
 
     def to_dict(self):
         """
@@ -127,23 +125,18 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
-    preprocessing_num_workers: Optional[int] = field(default=None, metadata={"help": "The number of processes to use for the preprocessing."})
+    preprocessing_num_workers: Optional[int] = field(default=10, metadata={"help": "The number of processes to use for the preprocessing."})
     max_seq_length: int = field(default=384, metadata={"help": ("The maximum total input sequence length after tokenization. Sequences longer " "than this will be truncated, sequences shorter will be padded.")})
     doc_stride: int = field(default=128, metadata={"help": "When splitting up a long document into chunks, how much stride to take between chunks."})
-    n_best_size: int = field(default=20, metadata={"help": "The total number of n-best predictions to generate when looking for an answer."})
-    max_answer_length: int = field(default=30, metadata={"help": ("The maximum length of an answer that can be generated. This is needed because the start and end predictions are not conditioned on one another.")})
+    n_best_size: int = field(default=2, metadata={"help": "The total number of n-best predictions to generate when looking for an answer."})
+    max_answer_length: int = field(default=1, metadata={"help": ("The maximum length of an answer that can be generated. This is needed because the start and end predictions are not conditioned on one another.")})
 
 
 # endregion
 
 
 # region Create a train state
-def create_train_state(
-    model: FlaxAutoModelForQuestionAnswering,
-    learning_rate_fn: Callable[[int], float],
-    num_labels: int,
-    training_args: TrainingArguments,
-) -> train_state.TrainState:
+def create_train_state(model: FlaxAutoModelForQuestionAnswering, learning_rate_fn: Callable[[int], float], num_labels: int, training_args: TrainingArguments) -> train_state.TrainState:
     """Create initial training state."""
 
     class TrainState(train_state.TrainState):
@@ -172,14 +165,7 @@ def create_train_state(
         flat_mask = {path: (path[-1] != "bias" and path[-2:] not in layer_norm_named_params) for path in flat_params}
         return traverse_util.unflatten_dict(flat_mask)
 
-    tx = optax.adamw(
-        learning_rate=learning_rate_fn,
-        b1=training_args.adam_beta1,
-        b2=training_args.adam_beta2,
-        eps=training_args.adam_epsilon,
-        weight_decay=training_args.weight_decay,
-        mask=decay_mask_fn,
-    )
+    tx = optax.adamw(learning_rate=learning_rate_fn, b1=training_args.adam_beta1, b2=training_args.adam_beta2, eps=training_args.adam_epsilon, weight_decay=training_args.weight_decay, mask=decay_mask_fn)
 
     def cross_entropy_loss(logits, labels):
         start_loss = optax.softmax_cross_entropy(logits[0], onehot(labels[0], num_classes=num_labels))
@@ -187,13 +173,7 @@ def create_train_state(
         xentropy = (start_loss + end_loss) / 2.0
         return jnp.mean(xentropy)
 
-    return TrainState.create(
-        apply_fn=model.__call__,
-        params=model.params,
-        tx=tx,
-        logits_fn=lambda logits: logits,
-        loss_fn=cross_entropy_loss,
-    )
+    return TrainState.create(apply_fn=model.__call__, params=model.params, tx=tx, logits_fn=lambda logits: logits, loss_fn=cross_entropy_loss)
 
 
 # endregion
@@ -272,11 +252,7 @@ def main():
 
     # region Logging
     # Make one log on every process with the configuration for debugging.
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,
-    )
+    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s", datefmt="%m/%d/%Y %H:%M:%S", level=logging.INFO)
     # Setup logging, we only want one process per machine to log things on the screen.
     logger.setLevel(logging.INFO if jax.process_index() == 0 else logging.ERROR)
     if jax.process_index() == 0:
@@ -306,7 +282,7 @@ def main():
     def strategy_and_dialogue_to_answer(strategy, dialogue):
         answer = {"text": ["Yes"], "answer_start": [28]} if strategy in dialogue[-1]["target"].split(", ") else {"text": ["No"], "answer_start": [35]}
         return answer
-    
+
     def file_name_and_idx_to_id(file_name, idx):
         parts = file_name.split("_")
         file_num = parts[1]
@@ -322,7 +298,7 @@ def main():
         return examples
 
     raw_datasets = datasets.load_dataset(get_strategy_dataset_name(strategies[0]))
-    raw_datasets = raw_datasets.map(prepare_features, batched=True, num_proc=10)
+    raw_datasets = raw_datasets.map(prepare_features, batched=True, num_proc=training_args.preprocessing_num_workers)
     # raw_datasets = datasets.DatasetDict()
 
     # strategy_datasets = [datasets.load_dataset(get_strategy_dataset_name(strategy), num_proc=10) for strategy in strategies]
@@ -429,7 +405,7 @@ def main():
     if training_args.do_train:
         # Create train feature from dataset
         train_dataset = raw_datasets["train"].shard(num_shards=jax.process_count(), index=jax.process_index())
-        train_dataset = train_dataset.map(prepare_train_features, batched=True, remove_columns=column_names, num_proc=10)
+        train_dataset = train_dataset.map(prepare_train_features, batched=True, remove_columns=column_names, num_proc=training_args.preprocessing_num_workers)
         # train_dataset = datasets.Dataset.from_generator(lambda: (yield from train_dataset), features=train_dataset.features)
         processed_raw_datasets["train"] = train_dataset
 
@@ -475,14 +451,14 @@ def main():
     if training_args.do_eval:
         eval_examples = raw_datasets["validation"].shard(num_shards=jax.process_count(), index=jax.process_index())
         # Validation Feature Creation
-        eval_dataset = eval_examples.map(prepare_validation_features, batched=True, remove_columns=column_names, num_proc=10)
+        eval_dataset = eval_examples.map(prepare_validation_features, batched=True, remove_columns=column_names, num_proc=training_args.preprocessing_num_workers)
         # eval_dataset = datasets.Dataset.from_generator(lambda: (yield from eval_dataset), features=eval_dataset.features)
         processed_raw_datasets["validation"] = eval_dataset
 
     if training_args.do_predict:
         predict_examples = raw_datasets["test"].shard(num_shards=jax.process_count(), index=jax.process_index())
         # Predict Feature Creation
-        predict_dataset = predict_examples.map(prepare_validation_features, batched=True, remove_columns=column_names, num_proc=10)
+        predict_dataset = predict_examples.map(prepare_validation_features, batched=True, remove_columns=column_names, num_proc=training_args.preprocessing_num_workers)
         # predict_dataset = datasets.Dataset.from_generator(lambda: (yield from predict_dataset), features=predict_dataset.features)
         processed_raw_datasets["test"] = predict_dataset
     # endregion
@@ -592,13 +568,7 @@ def main():
     # region Load model
     model = FlaxAutoModelForQuestionAnswering.from_pretrained(model_args.model_name_or_path, config=config, seed=training_args.seed, dtype=getattr(jnp, "float32"))
 
-    learning_rate_fn = create_learning_rate_fn(
-        len(train_dataset),
-        train_batch_size,
-        training_args.num_train_epochs,
-        training_args.warmup_steps,
-        training_args.learning_rate,
-    )
+    learning_rate_fn = create_learning_rate_fn(len(train_dataset), train_batch_size, training_args.num_train_epochs, training_args.warmup_steps, training_args.learning_rate)
 
     state = create_train_state(model, learning_rate_fn, num_labels=max_seq_length, training_args=training_args)
     # endregion
@@ -653,15 +623,7 @@ def main():
         rng, input_rng = jax.random.split(rng)
 
         # train
-        for step, batch in enumerate(
-            tqdm(
-                train_data_collator(input_rng, train_dataset, train_batch_size),
-                total=step_per_epoch,
-                desc="Training...",
-                position=1,
-            ),
-            1,
-        ):
+        for step, batch in enumerate(tqdm(train_data_collator(input_rng, train_dataset, train_batch_size), total=step_per_epoch, desc="Training...", position=1), 1):
             state, train_metric, dropout_rngs = p_train_step(state, batch, dropout_rngs)
             train_metrics.append(train_metric)
 
@@ -683,12 +645,7 @@ def main():
                 all_start_logits = []
                 all_end_logits = []
                 # evaluate
-                for batch in tqdm(
-                    eval_data_collator(eval_dataset, eval_batch_size),
-                    total=math.ceil(len(eval_dataset) / eval_batch_size),
-                    desc="Evaluating ...",
-                    position=2,
-                ):
+                for batch in tqdm(eval_data_collator(eval_dataset, eval_batch_size), total=math.ceil(len(eval_dataset) / eval_batch_size), desc="Evaluating ...", position=2):
                     _ = batch.pop("example_id")
                     predictions = pad_shard_unpad(p_eval_step)(state, batch, min_device_batch=per_device_eval_batch_size)
                     start_logits = np.array(predictions[0])

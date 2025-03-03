@@ -1,10 +1,7 @@
 python3.10 -m src.bert.run_qa \
   --model_name_or_path google-bert/bert-base-uncased \
-  --do_train   \
-  --do_eval   \
-  --learning_rate 3e-5 \
-  --num_train_epochs 2 \
-  --per_device_train_batch_size 12 \
   --output_dir ./bert-werewolf \
   --eval_steps 1000 \
+  --do_train   \
+  --do_eval   \
   --push_to_hub
