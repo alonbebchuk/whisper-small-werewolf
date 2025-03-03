@@ -1,0 +1,12 @@
+python3.10 -m src.bert.run_qa \
+  --model_name_or_path google-bert/bert-base-uncased \
+  --do_train   \
+  --do_eval   \
+  --max_seq_length 384 \
+  --doc_stride 128 \
+  --learning_rate 3e-5 \
+  --num_train_epochs 2 \
+  --per_device_train_batch_size 12 \
+  --output_dir ./bert-qa-squad \
+  --eval_steps 1000 \
+  --push_to_hub
