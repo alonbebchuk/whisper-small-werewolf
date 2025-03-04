@@ -35,6 +35,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from datasets import load_dataset
 from flax import struct, traverse_util
 from flax.jax_utils import pad_shard_unpad, replicate, unreplicate
 from flax.training import train_state
@@ -52,7 +53,6 @@ from transformers import (
     EvalPrediction,
     FlaxAutoModelForQuestionAnswering,
     HfArgumentParser,
-    PreTrainedTokenizerFast,
     is_tensorboard_available,
 )
 from transformers.utils import check_min_version, send_example_telemetry
@@ -75,8 +75,7 @@ class TrainingArguments:
     do_train: bool = field(default=False, metadata={"help": "Whether to run training."})
     do_eval: bool = field(default=False, metadata={"help": "Whether to run eval on the dev set."})
     do_predict: bool = field(default=False, metadata={"help": "Whether to run predictions on the test set."})
-    per_device_train_batch_size: int = field(default=8, metadata={"help": "Batch size per GPU/TPU core/CPU for training."})
-    per_device_eval_batch_size: int = field(default=8, metadata={"help": "Batch size per GPU/TPU core/CPU for evaluation."})
+    per_device_batch_size: int = field(default=8, metadata={"help": "Batch size per GPU/TPU core/CPU."})
     learning_rate: float = field(default=5e-5, metadata={"help": "The initial learning rate for AdamW."})
     weight_decay: float = field(default=0.0, metadata={"help": "Weight decay for AdamW if we apply some."})
     adam_beta1: float = field(default=0.9, metadata={"help": "Beta1 for AdamW optimizer"})
@@ -90,6 +89,7 @@ class TrainingArguments:
     eval_steps: int = field(default=None, metadata={"help": "Run an evaluation every X steps."})
     seed: int = field(default=42, metadata={"help": "Random seed that will be set at the beginning of training."})
     push_to_hub: bool = field(default=False, metadata={"help": "Whether or not to upload the trained model to the model hub after training."})
+    hub_model_name: str = field(default=None, metadata={"help": "The name of the repository to keep in sync with the local `output_dir`."})
 
     def __post_init__(self):
         self.output_dir = os.path.expanduser(self.output_dir)
@@ -297,8 +297,10 @@ def main():
         examples["id"] = [file_name_and_idx_to_id(file_name, idx) for (file_name, idx) in zip(examples["file_name"], examples["idx"])]
         return examples
 
+    # TODO: interleave all strategies
+    # TODO: change to streaming
     raw_datasets = datasets.load_dataset(get_strategy_dataset_name(strategies[0]))
-    raw_datasets = raw_datasets.map(prepare_features, batched=True, num_proc=training_args.preprocessing_num_workers)
+    raw_datasets = raw_datasets.map(prepare_features, batched=True, num_proc=data_args.preprocessing_num_workers)
     # raw_datasets = datasets.DatasetDict()
 
     # strategy_datasets = [datasets.load_dataset(get_strategy_dataset_name(strategy), num_proc=10) for strategy in strategies]
@@ -314,20 +316,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, use_fast=True)
     # endregion
 
-    # region Tokenizer check: this script requires a fast tokenizer.
-    if not isinstance(tokenizer, PreTrainedTokenizerFast):
-        raise ValueError("This example script only works for models that have a fast tokenizer. Checkout the big table of models at https://huggingface.co/transformers/index.html#supported-frameworks to find the model types that meet this requirement")
-    # endregion
-
     # region Preprocessing the datasets
-    # Preprocessing is slightly different for training and evaluation.
-    if training_args.do_train:
-        column_names = raw_datasets["train"].column_names
-    elif training_args.do_eval:
-        column_names = raw_datasets["validation"].column_names
-    else:
-        column_names = raw_datasets["test"].column_names
-
     # Padding side determines if we do (question|context) or (context|question).
     pad_on_right = tokenizer.padding_side == "right"
 
@@ -405,7 +394,7 @@ def main():
     if training_args.do_train:
         # Create train feature from dataset
         train_dataset = raw_datasets["train"].shard(num_shards=jax.process_count(), index=jax.process_index())
-        train_dataset = train_dataset.map(prepare_train_features, batched=True, remove_columns=column_names, num_proc=training_args.preprocessing_num_workers)
+        train_dataset = train_dataset.map(prepare_train_features, batched=True, remove_columns=train_dataset.column_names, num_proc=data_args.preprocessing_num_workers)
         # train_dataset = datasets.Dataset.from_generator(lambda: (yield from train_dataset), features=train_dataset.features)
         processed_raw_datasets["train"] = train_dataset
 
@@ -451,14 +440,14 @@ def main():
     if training_args.do_eval:
         eval_examples = raw_datasets["validation"].shard(num_shards=jax.process_count(), index=jax.process_index())
         # Validation Feature Creation
-        eval_dataset = eval_examples.map(prepare_validation_features, batched=True, remove_columns=column_names, num_proc=training_args.preprocessing_num_workers)
+        eval_dataset = eval_examples.map(prepare_validation_features, batched=True, remove_columns=eval_examples.column_names, num_proc=data_args.preprocessing_num_workers)
         # eval_dataset = datasets.Dataset.from_generator(lambda: (yield from eval_dataset), features=eval_dataset.features)
         processed_raw_datasets["validation"] = eval_dataset
 
     if training_args.do_predict:
         predict_examples = raw_datasets["test"].shard(num_shards=jax.process_count(), index=jax.process_index())
         # Predict Feature Creation
-        predict_dataset = predict_examples.map(prepare_validation_features, batched=True, remove_columns=column_names, num_proc=training_args.preprocessing_num_workers)
+        predict_dataset = predict_examples.map(prepare_validation_features, batched=True, remove_columns=predict_examples.column_names, num_proc=data_args.preprocessing_num_workers)
         # predict_dataset = datasets.Dataset.from_generator(lambda: (yield from predict_dataset), features=predict_dataset.features)
         processed_raw_datasets["test"] = predict_dataset
     # endregion
@@ -521,9 +510,17 @@ def main():
 
     # endregion
 
+    # Handle the repository creation
+    if training_args.push_to_hub:
+        # Create repo and retrieve repo_id
+        api = HfApi()
+        repo_id = api.create_repo(training_args.hub_model_name, exist_ok=True).repo_id
+
     # region Training steps and logging init
     train_dataset = processed_raw_datasets["train"]
+    train_dataset_length = train_dataset.info.splits["train"].num_examples
     eval_dataset = processed_raw_datasets["validation"]
+    eval_dataset_length = eval_dataset.info.splits["validation"].num_examples
 
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 3):
@@ -532,16 +529,10 @@ def main():
     # Define a summary writer
     has_tensorboard = is_tensorboard_available()
     if has_tensorboard and jax.process_index() == 0:
-        try:
-            from flax.metrics.tensorboard import SummaryWriter
+        from flax.metrics.tensorboard import SummaryWriter
 
-            summary_writer = SummaryWriter(training_args.output_dir)
-            summary_writer.hparams({**training_args.to_dict(), **vars(model_args), **vars(data_args)})
-        except ImportError as ie:
-            has_tensorboard = False
-            logger.warning(f"Unable to display metrics through TensorBoard because some package are not installed: {ie}")
-    else:
-        logger.warning("Unable to display metrics through TensorBoard because the package is not installed: Please run pip install tensorboard to enable.")
+        summary_writer = SummaryWriter(training_args.output_dir)
+        summary_writer.hparams({**training_args.to_dict(), **vars(model_args), **vars(data_args)})
 
     def write_train_metric(summary_writer, train_metrics, train_time, step):
         summary_writer.scalar("train_time", train_time, step)
@@ -560,15 +551,14 @@ def main():
     rng = jax.random.PRNGKey(training_args.seed)
     dropout_rngs = jax.random.split(rng, jax.local_device_count())
 
-    train_batch_size = int(training_args.per_device_train_batch_size) * jax.local_device_count()
-    per_device_eval_batch_size = int(training_args.per_device_eval_batch_size)
-    eval_batch_size = per_device_eval_batch_size * jax.local_device_count()
+    per_device_batch_size = int(training_args.per_device_batch_size)
+    batch_size = per_device_batch_size * jax.local_device_count()
     # endregion
 
     # region Load model
-    model = FlaxAutoModelForQuestionAnswering.from_pretrained(model_args.model_name_or_path, config=config, seed=training_args.seed, dtype=getattr(jnp, "float32"))
+    model = FlaxAutoModelForQuestionAnswering.from_pretrained(model_args.model_name_or_path, config=config, seed=training_args.seed, dtype=jnp.float32)
 
-    learning_rate_fn = create_learning_rate_fn(len(train_dataset), train_batch_size, training_args.num_train_epochs, training_args.warmup_steps, training_args.learning_rate)
+    learning_rate_fn = create_learning_rate_fn(train_dataset_length, batch_size, training_args.num_train_epochs, training_args.warmup_steps, training_args.learning_rate)
 
     state = create_train_state(model, learning_rate_fn, num_labels=max_seq_length, training_args=training_args)
     # endregion
@@ -612,7 +602,7 @@ def main():
     state = replicate(state)
 
     train_time = 0
-    step_per_epoch = len(train_dataset) // train_batch_size
+    step_per_epoch = train_dataset_length // batch_size
     total_steps = step_per_epoch * num_epochs
     epochs = tqdm(range(num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0)
     for epoch in epochs:
@@ -623,7 +613,7 @@ def main():
         rng, input_rng = jax.random.split(rng)
 
         # train
-        for step, batch in enumerate(tqdm(train_data_collator(input_rng, train_dataset, train_batch_size), total=step_per_epoch, desc="Training...", position=1), 1):
+        for step, batch in enumerate(tqdm(train_data_collator(input_rng, train_dataset, batch_size), total=step_per_epoch, desc="Training...", position=1), 1):
             state, train_metric, dropout_rngs = p_train_step(state, batch, dropout_rngs)
             train_metrics.append(train_metric)
 
@@ -645,9 +635,9 @@ def main():
                 all_start_logits = []
                 all_end_logits = []
                 # evaluate
-                for batch in tqdm(eval_data_collator(eval_dataset, eval_batch_size), total=math.ceil(len(eval_dataset) / eval_batch_size), desc="Evaluating ...", position=2):
+                for batch in tqdm(eval_data_collator(eval_dataset, batch_size), total=math.ceil(eval_dataset_length / batch_size), desc="Evaluating ...", position=2):
                     _ = batch.pop("example_id")
-                    predictions = pad_shard_unpad(p_eval_step)(state, batch, min_device_batch=per_device_eval_batch_size)
+                    predictions = pad_shard_unpad(p_eval_step)(state, batch, min_device_batch=per_device_batch_size)
                     start_logits = np.array(predictions[0])
                     end_logits = np.array(predictions[1])
                     all_start_logits.append(start_logits)
@@ -678,9 +668,6 @@ def main():
                     model.save_pretrained(training_args.output_dir, params=params)
                     tokenizer.save_pretrained(training_args.output_dir)
                     if training_args.push_to_hub:
-                        # Create repo and retrieve repo_id
-                        api = HfApi()
-                        repo_id = api.create_repo("bert-werewolf", exist_ok=True).repo_id
                         api.upload_folder(commit_message=f"Saving weights and logs of step {cur_step}", folder_path=training_args.output_dir, repo_id=repo_id, repo_type="model")
         epochs.desc = f"Epoch ... {epoch + 1}/{num_epochs}"
     # endregion
@@ -691,10 +678,10 @@ def main():
         all_start_logits = []
         all_end_logits = []
 
-        eval_loader = eval_data_collator(eval_dataset, eval_batch_size)
-        for batch in tqdm(eval_loader, total=math.ceil(len(eval_dataset) / eval_batch_size), desc="Evaluating ...", position=2):
+        eval_loader = eval_data_collator(eval_dataset, batch_size)
+        for batch in tqdm(eval_loader, total=math.ceil(eval_dataset_length / batch_size), desc="Evaluating ...", position=2):
             _ = batch.pop("example_id")
-            predictions = pad_shard_unpad(p_eval_step)(state, batch, min_device_batch=per_device_eval_batch_size)
+            predictions = pad_shard_unpad(p_eval_step)(state, batch, min_device_batch=per_device_batch_size)
             start_logits = np.array(predictions[0])
             end_logits = np.array(predictions[1])
             all_start_logits.append(start_logits)
