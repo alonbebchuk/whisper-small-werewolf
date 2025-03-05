@@ -1,3 +1,4 @@
+# python3.10 -m src.data.test_data_stream
 import jax
 import numpy as np
 from src.config.get_config import BERT_CONFIG, get_config, WHISPER_CONFIG

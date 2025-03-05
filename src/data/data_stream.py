@@ -82,8 +82,11 @@ class DataStream:
                 itr = iter(dataloader)
                 batch = next(itr)
                 epoch += 1
+            non_array_elements = {key: batch.pop(key) for key, value in list(batch.items()) if not isinstance(value, np.ndarray)}
             batch = shard(batch)
             batch["epoch"] = epoch
+            for key, value in non_array_elements.items():
+                batch[key] = value
             yield batch
 
     def get_iter(self, split):
@@ -94,8 +97,11 @@ def create_bert_collate_fn(config, tokenizer):
     ClassLabels = ClassLabel(num_classes=2, names=["No", "Yes"])
 
     def bert_collate_fn(batch):
-        results = tokenizer([sample["prompt"] for sample in batch], padding="max_length", max_length=config.model.max_seq_len)
-        results["labels"] = ClassLabels.str2int([sample["completion"] for sample in batch])
+        results ={}
+        out = tokenizer([sample["prompt"] for sample in batch], padding="max_length", max_length=config.model.max_seq_len, return_tensors="np")
+        results["input_ids"] = out["input_ids"]
+        results["attention_mask"] = out["attention_mask"]
+        results["labels"] = np.array(ClassLabels.str2int([sample["completion"] for sample in batch]), dtype=np.int32)
         results["strategy"] = [sample["strategy"] for sample in batch]
         return results
 
@@ -119,17 +125,24 @@ def create_whisper_collate_fn(config, tokenizer, feature_extractor):
                     audio_array = audio_array[-config.model.max_audio_array_len :]
             else:
                 audio_array = np.zeros(config.model.max_audio_array_len, np.float32)
+            input_features.append(feature_extractor(audio_array, sampling_rate=config.model.sampling_rate).input_features[0])
+            
             tokens = [tokenizer.bos_token_id] + tokenizer.encode(sample["prompt"] + sample["completion"], add_special_tokens=False) + [tokenizer.eos_token_id]
             slice_len = len(tokens) - 1
-            padding_len = config.model.max_len - slice_len
+            padding_len = config.model.max_seq_len - slice_len
+            
             prompt_len = sample["prompt_len"]
-            input_features.append(feature_extractor(audio_array, sampling_rate=config.model.sampling_rate).input_features[0])
             decoder_input_ids.append(tokens[:-1] + [tokenizer.pad_token_id] * padding_len)
             target_tokens.append(tokens[1:] + [tokenizer.pad_token_id] * padding_len)
             attention_mask.append([1] * slice_len + [0] * padding_len)
             loss_mask.append([0.0] * prompt_len + [1.0] * (slice_len - prompt_len) + [0.0] * padding_len)
             strategy.append(sample["strategy"])
-        return {"input_features": np.array(input_features, dtype=np.float32), "decoder_input_ids": np.array(decoder_input_ids, dtype=np.int32), "target_tokens": np.array(target_tokens, dtype=np.int32), "loss_mask": np.array(loss_mask, dtype=np.float32), "attention_mask": np.array(attention_mask, dtype=np.int32), "strategy": strategy}
+        return {"input_features": np.array(input_features, dtype=np.float32), 
+                "decoder_input_ids": np.array(decoder_input_ids, dtype=np.int32), 
+                "target_tokens": np.array(target_tokens, dtype=np.int32), 
+                "loss_mask": np.array(loss_mask, dtype=np.float32), 
+                "attention_mask": np.array(attention_mask, dtype=np.int32), 
+                "strategy": strategy}
 
     return whisper_collate_fn
 
