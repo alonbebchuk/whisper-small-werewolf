@@ -1,87 +1,76 @@
 import jax
 import numpy as np
 
-from datasets import load_dataset, interleave_datasets, DatasetDict, Audio
+from datasets import Audio, ClassLabel, concatenate_datasets, load_dataset
 from flax.training.common_utils import shard
-from src.common.config import get_strategy_dataset_name, strategies, prompt_without_dialogue_format
 from torch.utils.data import DataLoader
-from transformers import WhisperFeatureExtractor, WhisperTokenizer, WhisperProcessor
 
 
-def create_process_sample_fn(config, use_dialogue):
-    tokenizer = WhisperTokenizer.from_pretrained(config.model.name, bos_token=config.model.bos_token)
+def create_get_target_strategies_fn(config):
+    def get_target_strategies(sample):
+        target = sample["dialogue"][-1]["target"]
+        if target is None:
+            target_strategies = None
+        else:
+            target_strategies = set([target.strip() for target in sample["dialogue"][-1]["target"].split(", ")])
+            target_strategies = target_strategies & config.dataset.strategies
+        return {"target_strategies": target_strategies}
 
-    def process_sample(sample):
-        prompt = sample["prompt"] if use_dialogue else prompt_without_dialogue_format.format(sample["strategy"])
-        tokens = tokenizer.encode(prompt + sample["completion"], add_special_tokens=False)
-        tokens = [tokenizer.bos_token_id] + tokens + [tokenizer.eos_token_id]
-
-        slice_len = len(tokens) - 1
-        padding_len = config.model.max_len - slice_len
-        prompt_len = len(tokenizer.encode(prompt, add_special_tokens=False))
-
-        input_tokens = tokens[:-1] + [tokenizer.pad_token_id] * padding_len
-        target_tokens = tokens[1:] + [tokenizer.pad_token_id] * padding_len
-        attention_mask = [1] * slice_len + [0] * padding_len
-        loss_mask = [0.0] * prompt_len + [1.0] * (slice_len - prompt_len) + [0.0] * padding_len
-
-        input_tokens = np.array(input_tokens, dtype=np.int32)
-        target_tokens = np.array(target_tokens, dtype=np.int32)
-        loss_mask = np.array(loss_mask, dtype=np.float32)
-        attention_mask = np.array(attention_mask, dtype=np.int32)
-
-        result = {"input_tokens": input_tokens, "target_tokens": target_tokens, "loss_mask": loss_mask, "attention_mask": attention_mask}
-        return result
-
-    return process_sample
+    return get_target_strategies
 
 
-def create_collate_fn(config, use_audio):
-    audio = Audio()
-    feature_extractor = WhisperFeatureExtractor.from_pretrained(config.model.name)
-    processor = WhisperProcessor.from_pretrained(config.model.name)
+def get_prompts(config, tokenizer):
+    prompts = {}
+    for strategy in config.dataset.strategies:
+        prompt_prefix = config.dataset.prompt_prefix_format.format(strategy=strategy)
+        prompt_suffix = config.dataset.prompt_suffix_format.format(strategy=strategy)
+        prompt_format = prompt_prefix + "{dialogue}" + prompt_suffix if config.dataset.use_dialogue else prompt_prefix + prompt_suffix
+        prompt_len = len(tokenizer.encode(prompt_prefix + prompt_suffix, add_special_tokens=False))
+        prompts[strategy] = {"format": prompt_format, "length": prompt_len}
+    return prompts
 
-    def collate(batch):
-        audio_arrays = []
-        for x in batch:
-            if "array" in x["audio"]:
-                audio_arrays.append(x["audio"]["array"])
-            else:
-                audio_arrays.append(audio.decode_example(x["audio"])["array"])
 
-        input_features = feature_extractor(audio_arrays, sampling_rate=config.model.sampling_rate).input_features
-        input_features = processor.feature_extractor.pad([{"input_features": x} for x in list(input_features)], return_tensors="np").input_features
-        if not use_audio:
-            input_features = np.zeros(input_features, np.float32)
-        decoder_input_ids = np.array([x["input_tokens"] for x in batch], dtype=np.int32)
-        target_tokens = np.array([x["target_tokens"] for x in batch], dtype=np.int32)
-        loss_mask = np.array([x["loss_mask"] for x in batch], dtype=np.float32)
-        attention_mask = np.array([x["attention_mask"] for x in batch], dtype=np.int32)
+def create_get_prompt_and_completion_fn(config, prompts, tokenizer):
+    def get_prompt_and_completion(sample):
+        strategy = sample["strategy"]
+        completion = "Yes" if strategy in sample["target_strategies"] else "No"
+        if config.dataset.use_dialogue:
+            remaining_len = config.model.max_seq_len - prompts[strategy]["length"]
+            dialogues = []
+            for d in reversed(sample["dialogue"]):
+                dialogue = f"{d['speaker']}: {d['utterance']}\n"
+                dialogue_len = len(tokenizer.encode(dialogue, add_special_tokens=False))
+                if dialogue_len >= remaining_len:
+                    break
+                dialogues.append(dialogue)
+                remaining_len -= dialogue_len
+            prompt = None if len(dialogues) == 0 else prompts[strategy]["format"].format(dialogue="".join(reversed(dialogues)))
+            prompt_len = config.model.max_seq_len - remaining_len
+        else:
+            prompt = prompts[strategy]["format"]
+            prompt_len = prompts[strategy]["length"]
+        return {"prompt": prompt, "prompt_len": prompt_len, "completion": completion}
 
-        result = {"input_features": input_features, "decoder_input_ids": decoder_input_ids, "target_tokens": target_tokens, "loss_mask": loss_mask, "attention_mask": attention_mask}
-        return result
-
-    return collate
+    return get_prompt_and_completion
 
 
 class DataStream:
-    def __init__(self, config, use_audio, use_dialogue):
+    def __init__(self, config, tokenizer, collate_fn):
         super().__init__()
-
-        train_ds = interleave_datasets([load_dataset(get_strategy_dataset_name(config, strategy), split="train", streaming=True) for strategy in strategies])
-        val_ds = interleave_datasets([load_dataset(get_strategy_dataset_name(config, strategy), split="validation", streaming=True) for strategy in strategies])
-
+        self.dataset = load_dataset(config.dataset.name, streaming=True)
+        target_strategies_fn = create_get_target_strategies_fn(config)
         process_count, process_index = jax.process_count(), jax.process_index()
-        train_ds = train_ds.shard(num_shards=process_count, index=process_index)
-        val_ds = val_ds.shard(num_shards=process_count, index=process_index)
-
-        process_sample_fn = create_process_sample_fn(config, use_dialogue)
-        train_ds = train_ds.map(process_sample_fn)
-        val_ds = val_ds.map(process_sample_fn)
-
-        collate_fn = create_collate_fn(config, use_audio)
-        self.train_dl = DataLoader(train_ds, collate_fn=collate_fn, batch_size=config.training.batch_size, num_workers=10, prefetch_factor=5, drop_last=True)
-        self.val_dl = DataLoader(val_ds, collate_fn=collate_fn, batch_size=config.evaluation.batch_size, num_workers=10, prefetch_factor=5, drop_last=True)
+        prompts = get_prompts(config, tokenizer)
+        get_prompt_and_completion_fn = create_get_prompt_and_completion_fn(config, prompts, tokenizer)
+        for split in self.dataset.keys():
+            self.dataset[split] = self.dataset[split].map(target_strategies_fn)
+            self.dataset[split] = self.dataset[split].filter(lambda sample: sample["target_strategies"] is not None)
+            self.dataset[split] = concatenate_datasets([self.dataset[split].map(lambda _: {"strategy": strategy}) for strategy in config.dataset.strategies])
+            self.dataset[split] = self.dataset[split].shuffle()
+            self.dataset[split] = self.dataset[split].shard(num_shards=process_count, index=process_index)
+            self.dataset[split] = self.dataset[split].map(get_prompt_and_completion_fn)
+            batch_size = config.training.batch_size if split == "train" else config.evaluation.batch_size
+            self.dataset[split] = DataLoader(self.dataset[split], collate_fn=collate_fn, batch_size=batch_size, num_workers=10, prefetch_factor=5, drop_last=True)
 
     def generate(self, dataloader):
         itr = iter(dataloader)
@@ -97,8 +86,54 @@ class DataStream:
             batch["epoch"] = epoch
             yield batch
 
-    def train_iter(self):
-        return self.generate(self.train_dl)
+    def get_iter(self, split):
+        return self.generate(self.dataset[split])
 
-    def validation_iter(self):
-        return self.generate(self.val_dl)
+
+def create_bert_collate_fn(config, tokenizer):
+    ClassLabels = ClassLabel(num_classes=2, names=["No", "Yes"])
+
+    def bert_collate_fn(batch):
+        results = tokenizer([sample["prompt"] for sample in batch], padding="max_length", max_length=config.model.max_seq_len)
+        results["labels"] = ClassLabels.str2int([sample["completion"] for sample in batch])
+        results["strategy"] = [sample["strategy"] for sample in batch]
+        return results
+
+    return bert_collate_fn
+
+
+class BertDataStream(DataStream):
+    def __init__(self, config, tokenizer):
+        super().__init__(config, tokenizer, create_bert_collate_fn(config, tokenizer))
+
+
+def create_whisper_collate_fn(config, tokenizer, feature_extractor):
+    audio = Audio()
+
+    def whisper_collate_fn(batch):
+        input_features, decoder_input_ids, target_tokens, attention_mask, loss_mask, strategy = [], [], [], [], [], []
+        for sample in batch:
+            if config.dataset.use_audio:
+                audio_array = sample["audio"]["array"] if "array" in sample["audio"] else audio.decode_example(sample["audio"])["array"]
+                if len(audio_array) > config.model.max_audio_array_len:
+                    audio_array = audio_array[-config.model.max_audio_array_len :]
+            else:
+                audio_array = np.zeros(config.model.max_audio_array_len, np.float32)
+            tokens = [tokenizer.bos_token_id] + tokenizer.encode(sample["prompt"] + sample["completion"], add_special_tokens=False) + [tokenizer.eos_token_id]
+            slice_len = len(tokens) - 1
+            padding_len = config.model.max_len - slice_len
+            prompt_len = sample["prompt_len"]
+            input_features.append(feature_extractor(audio_array, sampling_rate=config.model.sampling_rate).input_features[0])
+            decoder_input_ids.append(tokens[:-1] + [tokenizer.pad_token_id] * padding_len)
+            target_tokens.append(tokens[1:] + [tokenizer.pad_token_id] * padding_len)
+            attention_mask.append([1] * slice_len + [0] * padding_len)
+            loss_mask.append([0.0] * prompt_len + [1.0] * (slice_len - prompt_len) + [0.0] * padding_len)
+            strategy.append(sample["strategy"])
+        return {"input_features": np.array(input_features, dtype=np.float32), "decoder_input_ids": np.array(decoder_input_ids, dtype=np.int32), "target_tokens": np.array(target_tokens, dtype=np.int32), "loss_mask": np.array(loss_mask, dtype=np.float32), "attention_mask": np.array(attention_mask, dtype=np.int32), "strategy": strategy}
+
+    return whisper_collate_fn
+
+
+class WhisperDataStream(DataStream):
+    def __init__(self, config, tokenizer, feature_extractor):
+        super().__init__(config, tokenizer, create_whisper_collate_fn(config, tokenizer, feature_extractor))
