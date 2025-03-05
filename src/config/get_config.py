@@ -16,7 +16,7 @@ dataset:
   strategies: !!set {"Accusation", "Defense", "Evidence", "Identity Declaration", "Interrogation", "No Strategy", "Call for Action"}
   use_dialogue: True
 evaluation:
-  batch_size: 64
+  batch_size: 8
   eval_freq: 20
   eval_steps: 5
 metrics:

@@ -98,9 +98,20 @@ def create_bert_collate_fn(config, tokenizer):
 
     def bert_collate_fn(batch):
         results ={}
-        out = tokenizer([sample["prompt"] for sample in batch], padding="max_length", max_length=config.model.max_seq_len, return_tensors="np")
-        results["input_ids"] = out["input_ids"]
-        results["attention_mask"] = out["attention_mask"]
+        prompts = [sample["prompt"] for sample in batch]
+        # Assert that prompts is a list of strings
+        print(prompts)
+        assert isinstance(prompts, list), f"Expected prompts to be a list, but got {type(prompts)}"
+        assert all(isinstance(prompt, str) for prompt in prompts), "All elements in prompts must be strings"
+        out = tokenizer.batch_encode_plus(prompts, padding="max_length", max_length=config.model.max_seq_len, return_tensors="np", truncation=True)
+        # Assert that input_ids has the expected shape
+        input_ids = out.input_ids
+        attention_mask = out.attention_mask
+        # print(input_ids.shape)
+
+        assert input_ids.shape == (len(batch), config.model.max_seq_len), f"Expected shape {(len(batch), config.model.max_seq_len)} but got {input_ids.shape}"
+        results["input_ids"] = input_ids
+        results["attention_mask"] = attention_mask
         results["labels"] = np.array(ClassLabels.str2int([sample["completion"] for sample in batch]), dtype=np.int32)
         results["strategy"] = [sample["strategy"] for sample in batch]
         return results

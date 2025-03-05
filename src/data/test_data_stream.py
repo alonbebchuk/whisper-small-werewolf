@@ -24,6 +24,7 @@ def test_stream(config, stream):
     pbar = tqdm(range(config.training.total_steps), desc="Training")
     eval_counter = config.evaluation.eval_freq
     for _, batch in zip(pbar, stream.get_iter("train")):
+        print(batch)
         print(jax.tree.map(np.shape, batch))
         print()
         eval_counter -= 1
