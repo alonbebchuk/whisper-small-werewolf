@@ -1,6 +1,7 @@
+# python3.10 -m src.data.test
 import os
 
-os.environ["HF_DATASETS_CACHE"] = "/dev/shm/hf_cache"
+os.environ["HF_DATASETS_CACHE"] = "/dev/shm"
 
 
 import datasets
@@ -22,19 +23,9 @@ from transformers.utils import send_example_telemetry
 logger = logging.getLogger(__name__)
 
 
-def shift_tokens_right(label_ids: np.array, decoder_start_token_id: int) -> np.ndarray:
-    """
-    Shift label ids one token to the right.
-    """
-    shifted_label_ids = np.zeros_like(label_ids)
-    shifted_label_ids[:, 1:] = label_ids[:, :-1]
-    shifted_label_ids[:, 0] = decoder_start_token_id
-
-    return shifted_label_ids
 
 
 def main(do_train, do_eval, data_collator):
-    send_example_telemetry("run_speech_recognition_seq2seq", framework="flax")
 
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -66,6 +57,7 @@ def main(do_train, do_eval, data_collator):
     epochs = tqdm(range(num_epochs), desc=f"Epoch (1/{num_epochs})", position=0)
     train_total_time = 0
     eval_total_time = 0
+    dataset = dataset.map(create_bert_preproc(bert_tokenizer))
     for epoch in epochs:
         # ======================== Training ================================
         train_epoch_start = time.time()

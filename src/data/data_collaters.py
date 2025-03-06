@@ -10,6 +10,12 @@ strategies = ["Accusation", "Call for Action", "Defense", "Evidence", "Identity 
 
 bert_tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased")
 whisper_tokenizer = WhisperTokenizer.from_pretrained("openai/whisper-small", bos_token="<|startoftranscript|>")
+def create_bert_preproc(bert_tokenizer):
+    def preproc(features):
+        features["prompt"] = bert_tokenizer.decode(bert_tokenizer.encode(f"{features['dialogue']} ", add_special_tokens=False)[-(max_len - 2) :])
+        return features
+    return preproc
+        
 
 
 @flax.struct.dataclass
@@ -19,10 +25,9 @@ class BertDataCollator:
         for feature in features:
             strategy = random.choice(strategies)
             label = int(strategy in feature["target_strategies"])
-            prompt = bert_tokenizer.decode(bert_tokenizer.encode(f"{feature['dialogue']}{strategy}: ", add_special_tokens=False)[-(max_len - 2) :])
             strategy_list.append(strategy)
             label_list.append(label)
-            prompt_list.append(prompt)
+            prompt_list.append(f"{feature['prompt']}{strategy}")
 
         batch = bert_tokenizer(prompt_list, padding="max_length", max_length=max_len, return_tensors="np")
 

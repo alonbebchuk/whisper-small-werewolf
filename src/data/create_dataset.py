@@ -32,13 +32,16 @@ def process_sample(sample):
     else:
         audio_array = audio.decode_example(sample["audio"])["array"]
     audio_array = audio_array[-max_audio_len:]
-    input_features = feature_extractor(audio_array, sampling_rate=feature_extractor.sampling_rate).input_features[0]
-
-    return {"target_strategies": target_strategies, "dialogue": dialogue, "input_features": input_features}
+    # input_features = feature_extractor(audio_array, sampling_rate=feature_extractor.sampling_rate).input_features[0]
+    result = {"target_strategies": target_strategies, "dialogue": dialogue
+            #   , "input_features": input_features
+              }
+    sample.update(result)
+    return sample
 
 
 dataset = load_dataset("iohadrubin/werewolf_dialogue_data_10sec", num_proc=num_proc)
-dataset = dataset.remove_columns(["start", "end", "startTime", "startRoles", "endRoles", "playerNames"])
+# dataset = dataset.remove_columns(["start", "end", "startTime", "startRoles", "endRoles", "playerNames"])
 dataset = dataset.map(process_sample, num_proc=num_proc, remove_columns=["dialogue", "audio"])
 dataset = dataset.filter(lambda sample: sample["target_strategies"] is not None, num_proc=num_proc)
 dataset.push_to_hub("alonbeb/werewolf-data")
