@@ -14,7 +14,7 @@ import transformers
 
 from datasets import load_from_disk
 from flax.training.common_utils import shard
-from src.data.data_collaters import BertDataCollator, WhisperDataCollator
+from data.data_collators import BertDataCollator, WhisperDataCollator
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
