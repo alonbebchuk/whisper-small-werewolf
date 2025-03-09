@@ -30,7 +30,7 @@ def create_process_sample():
     whisper_tokenizer = WhisperTokenizer.from_pretrained("openai/whisper-small", truncation_side="left")
 
     def process_sample(sample):
-        if "array" in sample["audio"]:
+        if "array" not in sample["audio"]:
             sample["audio"] = audio.decode_example(sample["audio"])
         audio_array = sample["audio"]["array"][-max_audio_len:]
         sample["input_features"] = whisper_feature_extractor(audio_array, sampling_rate=sampling_rate).input_features[0]

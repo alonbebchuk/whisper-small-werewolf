@@ -79,6 +79,9 @@ def main(data_collator):
     dataset = load_from_disk("/dev/shm/hf_cache/werewolf_data")
     dataloaders = create_dataloaders(dataset, data_collator)
 
+    train_num_rows = dataset["train"].num_rows
+    validation_num_rows = dataset["validation"].num_rows
+
     num_epochs = 2
     total_train_time, total_eval_time = 0, 0
 
@@ -88,9 +91,9 @@ def main(data_collator):
         eval_time = run_epoch(dataloaders["validation"], desc=f"Evaluating Epoch {epoch + 1}", position=2)
         total_train_time += train_time
         total_eval_time += eval_time
-        logger.info(f"Epoch {epoch + 1}: Train Time = {train_time:.2f}s, Eval Time = {eval_time:.2f}s")
+        logger.info(f"Epoch {epoch + 1}: Training {train_num_rows / train_time:.2f} examples/s, Evaluating {validation_num_rows / eval_time:.2f} examples/s")
 
-    logger.info(f"Total Time: {total_train_time + total_eval_time:.2f}s | Train: {total_train_time:.2f}s | Eval: {total_eval_time:.2f}s")
+    logger.info(f"Total: Training {num_epochs * train_num_rows / total_train_time:.2f} examples/s, Evaluating {num_epochs * validation_num_rows / total_eval_time:.2f} examples/s")
 
 
 if __name__ == "__main__":
