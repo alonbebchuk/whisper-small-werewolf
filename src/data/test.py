@@ -5,6 +5,7 @@ os.environ["HF_DATASETS_CACHE"] = "/dev/shm/hf_cache"
 import datasets
 import jax
 import logging
+import multiprocessing as mp
 import numpy as np
 import sys
 import time
@@ -36,15 +37,16 @@ def setup_logging():
         transformers.utils.logging.set_verbosity_error()
 
 
+def worker_init_fn(worker_id):
+    np.random.seed(worker_id + int(time.time()))
+
+
 def create_dataloaders(dataset, data_collator):
     device_count = jax.device_count()
     train_batch_size = 8 * device_count
     eval_batch_size = 8 * device_count
     num_workers = os.cpu_count() // 2
     prefetch_factor = 4
-
-    def worker_init_fn(worker_id):
-        np.random.seed(worker_id + int(time.time()))
 
     common_kwargs = dict(
         num_workers=num_workers,
@@ -67,7 +69,7 @@ def run_epoch(loader, desc, position):
     for batch in tqdm(loader, desc=desc, position=position, leave=False):
         batch = shard(batch)
         if not first_batch_logged:
-            shapes = jax.tree_map(lambda x: x.shape, batch)
+            shapes = jax.tree.map(lambda x: x.shape, batch)
             print("First batch shapes:", shapes)
             first_batch_logged = True
     return time.time() - start_time
@@ -97,7 +99,10 @@ def main(data_collator):
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
+
     logger.info("Running Bert Test...")
     main(BertDataCollator())
+
     logger.info("Running Whisper Test...")
     main(WhisperDataCollator())
