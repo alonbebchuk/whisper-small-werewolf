@@ -2,11 +2,9 @@ import os
 
 os.environ["HF_DATASETS_CACHE"] = "/dev/shm/hf_cache"
 
-
 import datasets
 import jax
 import logging
-import multiprocess
 import numpy as np
 import sys
 import time
@@ -14,7 +12,7 @@ import transformers
 
 from datasets import load_from_disk
 from flax.training.common_utils import shard
-from data.data_collators import BertDataCollator, WhisperDataCollator
+from src.data.data_collators import BertDataCollator, WhisperDataCollator
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -22,13 +20,14 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 
-def main(data_collator):
+def setup_logging():
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
-    logger.setLevel(logging.INFO if jax.process_index() == 0 else logging.ERROR)
+    level = logging.INFO if jax.process_index() == 0 else logging.ERROR
+    logger.setLevel(level)
     if jax.process_index() == 0:
         datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_info()
@@ -36,54 +35,66 @@ def main(data_collator):
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
 
+
+def create_dataloaders(dataset, data_collator):
+    device_count = jax.device_count()
+    train_batch_size = 8 * device_count
+    eval_batch_size = 8 * device_count
+    num_workers = os.cpu_count() // 2
+    prefetch_factor = 4
+
+    def worker_init_fn(worker_id):
+        np.random.seed(worker_id + int(time.time()))
+
+    common_kwargs = dict(
+        num_workers=num_workers,
+        collate_fn=data_collator,
+        pin_memory=True,
+        drop_last=True,
+        worker_init_fn=worker_init_fn,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=True,
+    )
+
+    train_loader = DataLoader(dataset["train"], batch_size=train_batch_size, shuffle=True, **common_kwargs)
+    validation_loader = DataLoader(dataset["validation"], batch_size=eval_batch_size, shuffle=False, **common_kwargs)
+    return {"train": train_loader, "validation": validation_loader}
+
+
+def run_epoch(loader, desc, position):
+    start_time = time.time()
+    first_batch_logged = False
+    for batch in tqdm(loader, desc=desc, position=position, leave=False):
+        batch = shard(batch)
+        if not first_batch_logged:
+            shapes = jax.tree_map(lambda x: x.shape, batch)
+            print("First batch shapes:", shapes)
+            first_batch_logged = True
+    return time.time() - start_time
+
+
+def main(data_collator):
+    setup_logging()
+
     dataset = load_from_disk("/dev/shm/hf_cache/werewolf_data")
+    dataloaders = create_dataloaders(dataset, data_collator)
 
     num_epochs = 2
-    num_workers = multiprocess.cpu_count()
-    per_device_train_batch_size = 8
-    train_batch_size = per_device_train_batch_size * jax.device_count()
-    per_device_eval_batch_size = 8
-    eval_batch_size = per_device_eval_batch_size * jax.device_count()
+    total_train_time, total_eval_time = 0, 0
 
-    epochs = tqdm(range(num_epochs), desc=f"Epoch (1/{num_epochs})", position=0)
-    train_total_time = 0
-    eval_total_time = 0
+    epochs = tqdm(range(num_epochs), desc="Epochs", position=0)
     for epoch in epochs:
-        # ======================== Training ================================
-        train_epoch_start = time.time()
+        train_time = run_epoch(dataloaders["train"], desc=f"Training Epoch {epoch + 1}", position=1)
+        eval_time = run_epoch(dataloaders["validation"], desc=f"Evaluating Epoch {epoch + 1}", position=2)
+        total_train_time += train_time
+        total_eval_time += eval_time
+        logger.info(f"Epoch {epoch + 1}: Train Time = {train_time:.2f}s, Eval Time = {eval_time:.2f}s")
 
-        train_loader = DataLoader(dataset["train"], batch_size=train_batch_size, shuffle=True, num_workers=num_workers, collate_fn=data_collator, drop_last=True)
-        # train
-        for batch in tqdm(train_loader, desc="Training...", position=1, leave=False):
-            batch = shard(batch)
-            print(jax.tree.map(np.shape, batch))
-
-        train_epoch_time = time.time() - train_epoch_start
-        train_total_time += train_epoch_time
-
-        epochs.write(f"Train Epoch: {epoch + 1} | Train Epoch Time: {train_epoch_time}s")
-
-        # ======================== Evaluating ==============================
-        eval_epoch_start = time.time()
-
-        eval_loader = DataLoader(dataset["validation"], batch_size=eval_batch_size, shuffle=True, num_workers=num_workers, collate_fn=data_collator, drop_last=True)
-        for batch in tqdm(eval_loader, desc="Evaluating...", position=2, leave=False):
-            batch = shard(batch)
-            print(jax.tree.map(np.shape, batch))
-
-        eval_epoch_time = time.time() - eval_epoch_start
-        eval_total_time += eval_epoch_time
-
-        epochs.write(f"Eval Epoch: {epoch + 1} | Eval Epoch Time: {eval_epoch_time}s")
-
-        epochs.desc = f"Epoch ({epoch + 1}/{num_epochs})"
-
-    epochs.write(f"Total Time: {train_total_time + eval_total_time} | Train Total Time: {train_total_time} | Eval Total Time: {eval_total_time}")
+    logger.info(f"Total Time: {total_train_time + total_eval_time:.2f}s | Train: {total_train_time:.2f}s | Eval: {total_eval_time:.2f}s")
 
 
 if __name__ == "__main__":
-    print("Bert Test:")
+    logger.info("Running Bert Test...")
     main(BertDataCollator())
-
-    print("Whisper Test:")
+    logger.info("Running Whisper Test...")
     main(WhisperDataCollator())
