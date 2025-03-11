@@ -7,6 +7,10 @@ from src.new.data_collators import get_data_collator
 from torch.utils.data import DataLoader
 
 
+def worker_init_fn(worker_id):
+    return np.random.seed(worker_id + int(time.time()))
+
+
 _dataloaders = None
 
 
@@ -19,12 +23,12 @@ def get_dataloaders(model_name, training_args):
             collate_fn=data_collator,
             num_workers=os.cpu_count() // 2,
             prefetch_factor=4,
-            worker_init_fn=lambda worker_id: np.random.seed(worker_id + int(time.time())),
+            worker_init_fn=worker_init_fn,
             drop_last=True,
             persistent_workers=True,
             pin_memory=True,
         )
-        train_loader = DataLoader(dataset["train"], batch_size=training_args.train_batch_size, shuffle=True, **common_kwargs)
-        validation_loader = DataLoader(dataset["validation"], batch_size=training_args.eval_batch_size, shuffle=False, **common_kwargs)
-        _dataloaders = (train_loader, validation_loader)
+        train_loader = DataLoader(dataset["train"], batch_size=training_args._train_batch_size, shuffle=True, **common_kwargs)
+        eval_loader = DataLoader(dataset["validation"], batch_size=training_args._eval_batch_size, shuffle=False, **common_kwargs)
+        _dataloaders = (train_loader, eval_loader)
     return _dataloaders

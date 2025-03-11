@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from flax import jax_utils, traverse_util
+from flax import jax_utils, struct, traverse_util
 from flax.training import train_state
 from flax.training.common_utils import onehot, shard_prng_key
 from src.new.learning_rate import get_learning_rate_fn
@@ -12,9 +12,9 @@ from typing import Callable
 
 class TrainState(train_state.TrainState):
     dropout_rng: jnp.ndarray
-    learning_rate_fn: Callable
-    loss_fn: Callable
-    logits_fn: Callable = None
+    learning_rate_fn: Callable = struct.field(pytree_node=False)
+    loss_fn: Callable = struct.field(pytree_node=False)
+    logits_fn: Callable = struct.field(pytree_node=False)
 
     def replicate(self):
         return jax_utils.replicate(self).replace(dropout_rng=shard_prng_key(self.dropout_rng))
@@ -43,7 +43,7 @@ def get_dropout_rng(training_args):
     return dropout_rng
 
 
-def create_train_state(model_name, training_args, layer_norm_candidates, loss_fn, logits_fn=None):
+def create_train_state(model_name, training_args, layer_norm_candidates, loss_fn):
     model = get_model(model_name)
     learning_rate_fn = get_learning_rate_fn(training_args)
     adamw = get_adamw(training_args, learning_rate_fn, layer_norm_candidates)
@@ -56,9 +56,8 @@ def create_train_state(model_name, training_args, layer_norm_candidates, loss_fn
         "dropout_rng": dropout_rng,
         "learning_rate_fn": learning_rate_fn,
         "loss_fn": loss_fn,
+        "logits_fn": lambda logits: logits.argmax(-1),
     }
-    if logits_fn is not None:
-        state_args["logits_fn"] = logits_fn
     return TrainState.create(**state_args)
 
 
@@ -70,10 +69,7 @@ def get_bert_train_state(model_name, training_args):
         xentropy = optax.softmax_cross_entropy(logits, onehot(labels, num_classes))
         return jnp.mean(xentropy)
 
-    def logits_fn(logits):
-        return logits.argmax(-1)
-
-    return create_train_state(model_name, training_args, layer_norm_candidates, loss_fn, logits_fn)
+    return create_train_state(model_name, training_args, layer_norm_candidates, loss_fn)
 
 
 def get_whisper_train_state(model_name, training_args):

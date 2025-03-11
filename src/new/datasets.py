@@ -1,7 +1,7 @@
 import numpy as np
 import os
 
-from datasets import Audio, DatasetDict, load_dataset, load_from_disk
+from datasets import Audio, load_dataset, load_from_disk
 from src.new.tokenizers import get_tokenizer
 from transformers import WhisperFeatureExtractor
 
@@ -34,12 +34,12 @@ def get_bert_process_sample_fn(model_name):
     def bert_process_sample_fn(sample):
         targets, dialogue = get_dialogue_and_targets(sample)
         choices = []
-        for strategy in strategies:
+        for strategy_id, strategy in enumerate(strategies):
             is_strategy, prompt = get_is_strategy_and_prompt(targets, dialogue, strategy)
             result = tokenizer(prompt, padding="max_length", max_length=max_tokens_len, truncation=True)
             choices.append(
                 {
-                    "strategy": strategy,
+                    "strategy_id": strategy_id,
                     "is_strategy": is_strategy,
                     "labels": is_strategy,
                     "input_ids": result.input_ids,
@@ -59,7 +59,7 @@ def get_whisper_process_sample_fn(model_name):
         input_features = feature_extractor(sample["audio"]["array"][-max_audio_len:], sampling_rate=sampling_rate).input_features
         choices = []
         targets, dialogue = get_dialogue_and_targets(sample)
-        for strategy in strategies:
+        for strategy_id, strategy in enumerate(strategies):
             is_strategy, prompt = get_is_strategy_and_prompt(targets, dialogue, strategy)
             completion = completions[is_strategy]
             result = tokenizer([prompt + completion], padding="max_length", max_length=max_tokens_len, truncation=True, return_length=True)
@@ -68,7 +68,7 @@ def get_whisper_process_sample_fn(model_name):
             labels[completion_index] = result.input_ids[0][1:][completion_index]
             choices.append(
                 {
-                    "strategy": strategy,
+                    "strategy_id": strategy_id,
                     "is_strategy": is_strategy,
                     "labels": labels,
                     "decoder_input_ids": result.input_ids[0],

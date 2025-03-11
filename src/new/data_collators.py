@@ -14,7 +14,7 @@ class BertDataCollator:
     def __call__(self, features):
         bert_choices = get_random_choices(features)
         return {
-            "strategy": np.array([choice["strategy"] for choice in bert_choices], dtype=object),
+            "strategy_id": np.array([choice["strategy_id"] for choice in bert_choices], dtype=np.int32),
             "is_strategy": np.array([choice["is_strategy"] for choice in bert_choices], dtype=np.int32),
             "labels": np.array([choice["labels"] for choice in bert_choices], dtype=np.int32),
             "input_ids": np.array([choice["input_ids"] for choice in bert_choices], dtype=np.int32),
@@ -27,7 +27,7 @@ class WhisperDataCollator:
         whisper_choices = get_random_choices(features)
         return {
             "input_features": np.array([feature["input_features"] for feature in features], dtype=np.float32),
-            "strategy": np.array([choice["strategy"] for choice in whisper_choices], dtype=object),
+            "strategy_id": np.array([choice["strategy_id"] for choice in whisper_choices], dtype=np.int32),
             "is_strategy": np.array([choice["is_strategy"] for choice in whisper_choices], dtype=np.int32),
             "labels": np.array([choice["labels"] for choice in whisper_choices], dtype=np.int32),
             "decoder_input_ids": np.array([choice["decoder_input_ids"] for choice in whisper_choices], dtype=np.int32),
