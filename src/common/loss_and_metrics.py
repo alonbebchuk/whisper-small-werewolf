@@ -1,11 +1,16 @@
 import jax.numpy as jnp
 
 from jax.nn import log_softmax
+import jax
 
-
-def loss_and_metrics(logits, tokens, mask):
+def loss_and_metrics(logits, tokens, mask=None):
     logits = logits.astype(jnp.float32)
-    mask = mask.astype(jnp.float32)
+    
+    if mask is None:
+        # Create a mask of ones with the same shape as tokens
+        mask = jnp.ones_like(tokens, dtype=jnp.float32)
+    else:
+        mask = mask.astype(jnp.float32)
 
     total_sum = jnp.sum(mask)
 
@@ -21,5 +26,6 @@ def loss_and_metrics(logits, tokens, mask):
     correct_logits = jnp.where(mask > 0.0, correct_logits, jnp.array(False))
     correct_sum = jnp.sum(correct_logits)
     metrics = {"correct_sum": correct_sum, "total_sum": total_sum}
+    jax.debug.print("🤯 {x} 🤯", x=loss)
 
     return loss, metrics

@@ -1,7 +1,7 @@
 import numpy as np
-import random
 
 from src.data.process_dataset import strategies
+from transformers import WhisperFeatureExtractor
 
 strategies_len = len(strategies)
 
@@ -13,7 +13,7 @@ class BertDataCollator:
 
         batch = {
             "strategy": np.array([choice["strategy"] for choice in bert_choices], dtype=object),
-            "label": np.array([choice["label"] for choice in bert_choices], dtype=np.int32),
+            "labels": np.array([choice["label"] for choice in bert_choices], dtype=np.int32),
             "input_ids": np.array([choice["input_ids"] for choice in bert_choices], dtype=np.int32),
             "attention_mask": np.array([choice["attention_mask"] for choice in bert_choices], dtype=np.int32),
         }
@@ -21,13 +21,17 @@ class BertDataCollator:
 
 
 class WhisperDataCollator:
+    feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-small")
+
     def __call__(self, features):
+        input_features = feature_extractor(sample["audio"]["array"][-max_audio_len:], sampling_rate=sampling_rate).input_features
+
         rand_indices = np.random.randint(0, strategies_len, size=len(features))
         whisper_choices = [features[i]["whisper_choices"][rand_indices[i]] for i in range(len(features))]
 
         batch = {
             "strategy": np.array([choice["strategy"] for choice in whisper_choices], dtype=object),
-            "label": np.array([choice["label"] for choice in whisper_choices], dtype=np.int32),
+            "labels": np.array([choice["label"] for choice in whisper_choices], dtype=np.int32),
             "input_features": np.array([feature["input_features"] for feature in features], dtype=np.float32),
             "decoder_input_ids": np.array([choice["decoder_input_ids"] for choice in whisper_choices], dtype=np.int32),
             "target_tokens": np.array([choice["target_tokens"] for choice in whisper_choices], dtype=np.int32),

@@ -1,14 +1,14 @@
 # python3.10 -m src.new.train --model_name="bert"
 # python3.10 -m src.new.train --model_name="whisper"
-
 import os
 import multiprocessing as mp
 
 os.environ["HF_DATASETS_CACHE"] = "/dev/shm/hf_cache"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 mp.set_start_method("spawn", force=True)
 
-
 import datasets
+import fire
 import flax
 import jax
 import jax.numpy as jnp
@@ -153,4 +153,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    fire.Fire(main)

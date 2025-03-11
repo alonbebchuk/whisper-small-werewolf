@@ -56,7 +56,7 @@ def get_whisper_process_sample_fn(model_name):
     tokenizer = get_tokenizer(model_name)
 
     def whisper_process_sample_fn(sample):
-        input_features = feature_extractor(sample["audio"]["array"][-max_audio_len:], sampling_rate=sampling_rate).input_features
+        input_features = feature_extractor(sample["audio"]["array"][-max_audio_len:], sampling_rate=sampling_rate).input_features[0]
         choices = []
         targets, dialogue = get_dialogue_and_targets(sample)
         for strategy_id, strategy in enumerate(strategies):
