@@ -1,5 +1,3 @@
-# python3.10 -m src.new.train --model_name="bert"
-# python3.10 -m src.new.train --model_name="whisper"
 import os
 import multiprocessing as mp
 
@@ -152,5 +150,7 @@ def main():
             model.save_pretrained(training_args.output_dir, params=params)
 
 
+# python3.10 -m src.new.train --model_name="bert"
+# python3.10 -m src.new.train --model_name="whisper"
 if __name__ == "__main__":
     fire.Fire(main)
