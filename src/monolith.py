@@ -1,83 +1,53 @@
 import os
 
 os.environ["HF_DATASETS_CACHE"] = "/dev/shm/hf_cache"
-
+import numpy as np
+from datasets import Audio, load_dataset
+from transformers import WhisperFeatureExtractor
+from transformers import BertTokenizer, WhisperTokenizer
 import yaml
-
 from ml_collections.config_dict import ConfigDict
 from transformers import FlaxBertForSequenceClassification, FlaxWhisperForConditionalGeneration
-
-
 import jax.numpy as jnp
 from flax.jax_utils import replicate
 from flax.training.common_utils import shard_prng_key
 from flax.training.train_state import TrainState
 from jax.random import PRNGKey, split
 import optax
-
-import jax.numpy as jnp
-
 from flax.struct import PyTreeNode
-
 from jax import jit, value_and_grad
 from jax.lax import psum
 from src.common.loss_and_metrics import loss_and_metrics
-
 from typing import Dict
-import os
-
-import jax.numpy as jnp
-
 from jax import jit
-from jax.lax import psum
-from src.common.loss_and_metrics import loss_and_metrics
-from typing import Dict
-
 import jax
-import numpy as np
 import wandb
 from tqdm.auto import tqdm
-import numpy as np
-
 from src.data.process_dataset import strategies
-
 import datasets
-import jax
 import logging
 import multiprocessing as mp
-import numpy as np
 import sys
 import time
 import transformers
-
 from datasets import load_from_disk
 from flax.training.common_utils import shard
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
-
-
-
-
-import jax.numpy as jnp
-
 from jax.nn import log_softmax
-import jax
 from optax import sigmoid_binary_cross_entropy
+from flax import struct, traverse_util
+from flax.training.common_utils import onehot
+
+
+
 
 logger = logging.getLogger(__name__)
 
 
 
-import os
 
-os.environ["HF_DATASETS_CACHE"] = "/dev/shm/hf_cache"
 
-import numpy as np
-
-from datasets import Audio, load_dataset
-from transformers import WhisperFeatureExtractor
-from transformers import BertTokenizer, WhisperTokenizer
 
 completions = ["No", "Yes"]
 strategies = ["Accusation", "Call for Action", "Defense", "Evidence", "Identity Declaration", "Interrogation"]
@@ -149,18 +119,6 @@ def create_process_sample():
     return process_sample
 
 
-if __name__ == "__main__":
-    num_proc = os.cpu_count() // 2
-
-    dataset = load_dataset("iohadrubin/werewolf_dialogue_data_10sec", num_proc=num_proc)
-    dataset = dataset.filter(filter_sample, num_proc=num_proc)
-
-    process_sample = create_process_sample()
-    dataset = dataset.map(process_sample, num_proc=num_proc)
-
-    dataset = dataset.shuffle(seed=42)
-    dataset = dataset.flatten_indices(num_proc=num_proc)
-    dataset.save_to_disk("/dev/shm/hf_cache/werewolf_data", num_proc=num_proc)
 
 
 def loss_and_metrics(logits, tokens, mask=None):
@@ -210,6 +168,43 @@ def setup_logging():
     else:
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
+
+
+
+class RollingAverage(PyTreeNode):
+    size: int
+    last_element: int
+    mat: jnp.ndarray
+
+    def update(self, new_value):
+        mat = self.mat.at[self.last_element].set(new_value)
+        last_element = (self.last_element + 1) % mat.shape[0]
+        size = jnp.where(self.size != mat.shape[0], self.size + 1, self.size)
+
+        curr_value = mat.sum() / size
+        new_value = self.replace(size=size, last_element=last_element, mat=mat)
+        return curr_value, new_value
+
+    @classmethod
+    def create(cls, *, size: int):
+        zero_mat = jnp.zeros(size, dtype=jnp.float32)
+
+        rolling_average = cls(size=0, last_element=0, mat=zero_mat)
+        return rolling_average
+
+
+
+class TrainStateWithMetrics(TrainState):
+    loss_metric: RollingAverage
+    acc_metric: RollingAverage
+    dropout_rng: PRNGKey
+
+    def replicate(self):
+        replicated = replicate(self).replace(dropout_rng=shard_prng_key(self.dropout_rng))
+        return replicated
+
+
+
 
 
 BERT_CONFIG = """
@@ -274,22 +269,9 @@ def create_learning_rate_schedule(config):
     schedule_fn = join_schedules(schedules=[warmup_fn, decay_fn], boundaries=[warmup_steps])
     return schedule_fn
 
-from flax.jax_utils import replicate
-from flax.training.common_utils import shard_prng_key
-from flax.training.train_state import TrainState
-from jax.random import PRNGKey, split
-import optax
-from src.common.rolling_avg import RollingAverage
 
 
-class TrainStateWithMetrics(TrainState):
-    loss_metric: RollingAverage
-    acc_metric: RollingAverage
-    dropout_rng: PRNGKey
 
-    def replicate(self):
-        replicated = replicate(self).replace(dropout_rng=shard_prng_key(self.dropout_rng))
-        return replicated
 
 
 from flax import struct, traverse_util
@@ -375,22 +357,6 @@ def whisper_eval_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray
     acc = metrics["correct_sum"] / metrics["total_sum"]
 
     return loss, acc
-
-
-import jax.numpy as jnp
-
-
-from jax import jit, value_and_grad
-from jax.lax import psum
-from src.common.loss_and_metrics import loss_and_metrics
-from src.training.train_state import TrainStateWithMetrics
-from typing import Dict
-
-import jax.numpy as jnp
-from jax import jit
-import jax
-import optax
-from flax.training.common_utils import onehot
 
 
 
@@ -513,29 +479,6 @@ class WhisperDataCollator:
 
 
 
-class RollingAverage(PyTreeNode):
-    size: int
-    last_element: int
-    mat: jnp.ndarray
-
-    def update(self, new_value):
-        mat = self.mat.at[self.last_element].set(new_value)
-        last_element = (self.last_element + 1) % mat.shape[0]
-        size = jnp.where(self.size != mat.shape[0], self.size + 1, self.size)
-
-        curr_value = mat.sum() / size
-        new_value = self.replace(size=size, last_element=last_element, mat=mat)
-        return curr_value, new_value
-
-    @classmethod
-    def create(cls, *, size: int):
-        zero_mat = jnp.zeros(size, dtype=jnp.float32)
-
-        rolling_average = cls(size=0, last_element=0, mat=zero_mat)
-        return rolling_average
-
-
-
 class TrainStateWithMetrics(TrainState):
     loss_metric: RollingAverage
     acc_metric: RollingAverage
@@ -544,10 +487,6 @@ class TrainStateWithMetrics(TrainState):
     def replicate(self):
         replicated = replicate(self).replace(dropout_rng=shard_prng_key(self.dropout_rng))
         return replicated
-
-
-from flax import struct, traverse_util
-
 
 def decay_mask_fn(params):
     flat_params = traverse_util.flatten_dict(params)
@@ -568,7 +507,6 @@ def create_train_state(config, model, lr_schedule):
     opt = optax.adamw(lr_schedule, weight_decay=config.training.wd, b2=config.training.b2, eps=float(config.training.eps), mask=decay_mask_fn)
     opt = optax.chain(optax.clip_by_global_norm(1), opt)
     tx = optax.apply_if_finite(opt, max_consecutive_errors=1000000)
-    # tx = optax.chain(opt, optax.skip_not_finite)
     loss_metric = RollingAverage.create(size=config.metrics.rolling_average_window)
     acc_metric = RollingAverage.create(size=config.metrics.rolling_average_window)
     dropout_rng = split(PRNGKey(0))[1]
@@ -577,12 +515,20 @@ def create_train_state(config, model, lr_schedule):
     return train_state
 
 
-
-
 def worker_init_fn(worker_id):
     np.random.seed(worker_id + int(time.time()))
 
 from transformers import AutoConfig
+
+
+from collections import namedtuple
+
+
+STEPS = namedtuple("STEPS", ["train_step", "eval_step"])
+
+bert_steps = STEPS(bert_train_step, bert_eval_step)
+whisper_steps = STEPS(whisper_train_step, whisper_eval_step)
+
 def get_data_collator(model_name):
     if "bert" in model_name:
         config = AutoConfig.from_pretrained(model_name)
@@ -599,7 +545,24 @@ def train(model_name):
     setup_logging()
     mp.set_start_method("spawn", force=True)
     config = get_config(model_name)
-    dataset = load_from_disk("/dev/shm/hf_cache/werewolf_data")
+    # dataset = load_from_disk("/dev/shm/hf_cache/werewolf_data")
+    num_proc = os.cpu_count() // 2
+
+    dataset = load_dataset("iohadrubin/werewolf_dialogue_data_10sec", num_proc=num_proc)
+    new_dataset = datasets.DatasetDict()
+    for split in ["train",
+                #   "validation","test"
+                  ]:
+        new_dataset[split] = dataset[split].select(range(300))
+    dataset = new_dataset
+    
+    dataset = dataset.filter(filter_sample, num_proc=num_proc)
+
+    process_sample = create_process_sample()
+    dataset = dataset.map(process_sample, num_proc=num_proc)
+
+    dataset = dataset.shuffle(seed=42)
+    dataset = dataset.flatten_indices(num_proc=num_proc)
 
     device_count = jax.device_count()
     train_batch_size = 8 * device_count
@@ -662,7 +625,7 @@ def train(model_name):
 
 import fire
 
-# python3.10 -m src.train --model_name=openai/whisper-small
-# python3.10 -m src.train --model_name=google-bert/bert-base-cased
+# python3.10 -m src.monolith --model_name=openai/whisper-small
+# python3.10 -m src.monolith --model_name=google-bert/bert-base-cased
 if __name__ == "__main__":
     fire.Fire(train)
