@@ -340,25 +340,6 @@ def whisper_train_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarra
 
 
 
-
-@jit
-def whisper_eval_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray]):
-    def loss_fn(params):
-        outputs = state.apply_fn(**{"params": params}, input_features=batch["input_features"], decoder_input_ids=batch["decoder_input_ids"], decoder_attention_mask=batch["attention_mask"], train=True)
-
-        loss, metrics = loss_and_metrics(outputs.logits, batch["target_tokens"], batch["loss_mask"])
-        return loss, metrics
-
-    loss, metrics = loss_fn(state.params)
-
-    loss = psum(loss, "batch")
-    metrics = psum(metrics, "batch")
-    acc = metrics["correct_sum"] / metrics["total_sum"]
-
-    return loss, acc
-
-
-
 @jit
 def bert_train_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray]):
     def loss_fn(params):
@@ -415,31 +396,6 @@ def bert_train_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray])
 
 
 
-@jit
-def bert_eval_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray]):
-    def loss_fn(params):
-        labels = batch["labels"],
-        jax.debug.print("🤯 labels={labels}", labels=labels)
-        input_ids = batch["input_ids"],
-        jax.debug.print("🤯 input_ids={input_ids}", input_ids=input_ids[0])
-        outputs = state.apply_fn(**{"params": params}, 
-                                input_ids=batch["input_ids"], 
-                                attention_mask=batch["attention_mask"], 
-                                deterministic=True)
-
-        # loss, metrics = loss_and_metrics(outputs.logits, batch["labels"][...,None], batch["attention_mask"])
-        loss, metrics = loss_and_metrics(outputs.logits, batch["labels"][...,None])
-        return loss, metrics
-
-    loss, metrics = loss_fn(state.params)
-
-    loss = psum(loss, "batch")
-    metrics = psum(metrics, "batch")
-    acc = metrics["correct_sum"] / metrics["total_sum"]
-
-    return loss, acc
-
-
 
 strategies_len = len(strategies)
 max_audio_len = 480000
@@ -482,7 +438,7 @@ class BertDataCollator:
         return encoding
 
 
-
+from transformers import WhisperFeatureExtractor, WhisperTokenizer
 class WhisperDataCollator:
     def __init__(self):
         self.feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-small")
@@ -522,11 +478,21 @@ class WhisperDataCollator:
         encoding["target_tokens"] = tokens[:,1:]
         encoding["attention_mask"] = encoding["attention_mask"][:,:-1]
         loss_mask = np.zeros_like(encoding["attention_mask"], dtype=np.int32)
-        loss_mask[:,-1] = 1
+        loss_mask[:,-2:] = 1
         encoding["loss_mask"] = loss_mask
         encoding["strategy"] = strategy_list
         encoding["labels"] = np.array(label_list, dtype=np.int32)
-        encoding["input_features"] = self.feature_extractor(np.array(audio_list), sampling_rate=sampling_rate).input_features
+        
+        # Process each audio sample individually instead of trying to convert them all to a numpy array at once
+        input_features_list = []
+        for audio_sample in audio_list:
+            features = self.feature_extractor(audio_sample, sampling_rate=sampling_rate).input_features
+            input_features_list.append(features)
+        
+        for key in ["loss_mask", "attention_mask", "target_tokens", "decoder_input_ids"]:
+            encoding[key] = encoding[key][:,:-1]
+        # Stack the processed features
+        encoding["input_features"] = np.vstack(input_features_list)
 
         return encoding
 
@@ -581,8 +547,8 @@ from collections import namedtuple
 
 STEPS = namedtuple("STEPS", ["train_step", "eval_step"])
 
-bert_steps = STEPS(bert_train_step, bert_eval_step)
-whisper_steps = STEPS(whisper_train_step, whisper_eval_step)
+bert_steps = STEPS(bert_train_step, None)
+whisper_steps = STEPS(whisper_train_step, None)
 
 def get_data_collator(model_name):
     if "bert" in model_name:
