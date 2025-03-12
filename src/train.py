@@ -110,6 +110,7 @@ def train(model_name):
         for step, batch in zip(pbar, train_loader):
             print(jax.tree.map(np.shape, batch))
             epoch = batch.pop("epoch", 0)
+            strategy = batch.pop("strategy")
             batch = shard(batch)
 
             state, curr_loss, curr_acc, preds = p_train_step(state, batch)

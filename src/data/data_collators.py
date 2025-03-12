@@ -25,7 +25,7 @@ class WhisperDataCollator:
         whisper_choices = [features[i]["whisper_choices"][rand_indices[i]] for i in range(len(features))]
 
         batch = {
-            "strategy": np.array([choice["strategy"] for choice in whisper_choices], dtype=object),
+            "strategy": [choice["strategy"] for choice in whisper_choices],
             "labels": np.array([choice["label"] for choice in whisper_choices], dtype=np.int32),
             "input_features": np.array([feature["input_features"] for feature in features], dtype=np.float32),
             "decoder_input_ids": np.array([choice["decoder_input_ids"] for choice in whisper_choices], dtype=np.int32),
