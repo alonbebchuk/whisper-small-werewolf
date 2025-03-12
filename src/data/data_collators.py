@@ -1,7 +1,6 @@
 import numpy as np
 
 from src.data.process_dataset import strategies
-from transformers import WhisperFeatureExtractor
 
 strategies_len = len(strategies)
 
@@ -21,11 +20,7 @@ class BertDataCollator:
 
 
 class WhisperDataCollator:
-    feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-small")
-
     def __call__(self, features):
-        # input_features = [x["input_features"] for x in features]
-        
         rand_indices = np.random.randint(0, strategies_len, size=len(features))
         whisper_choices = [features[i]["whisper_choices"][rand_indices[i]] for i in range(len(features))]
 
