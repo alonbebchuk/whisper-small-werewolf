@@ -15,7 +15,7 @@ model:
 training:
   b2: 0.95
   batch_size: 64
-  lr: 5e-9
+  lr: 5e-5
   total_steps: 1000
   warmup_steps: 100
   eps: 1e-6

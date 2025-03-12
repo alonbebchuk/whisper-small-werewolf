@@ -78,7 +78,6 @@ def create_process_sample():
 
         target = sample["dialogue"][-1]["target"]
         target_strategies = set(target.split(", ")) if target is not None else None
-
         dialogue = "".join(f"{d['speaker']}: {d['utterance']}\n" for d in sample["dialogue"][-max_dialogue_lookback:])
 
         bert_choices = []
@@ -219,7 +218,7 @@ model:
 training:
   b2: 0.95
   batch_size: 64
-  lr: 5e-9
+  lr: 5e-5
   total_steps: 1000
   warmup_steps: 100
   eps: 1e-6
@@ -443,37 +442,93 @@ def bert_eval_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray]):
 
 
 strategies_len = len(strategies)
+max_audio_len = 480000
+max_dialogue_lookback = 10
+max_tokens_len = 448
+sampling_rate = 16000
+prompt_format = "{dialogue}Does the final utterance conform to the strategy: '{strategy}'?\nAnswer with a single word: Yes or No.\n"
+audio = Audio(sampling_rate=sampling_rate)
+import random
 
 
 class BertDataCollator:
-    def __call__(self, features):
-        rand_indices = np.random.randint(0, strategies_len, size=len(features))
-        bert_choices = [features[i]["bert_choices"][rand_indices[i]] for i in range(len(features))]
+    def __init__(self):
+        self.tokenizer = BertTokenizer.from_pretrained("google-bert/bert-base-uncased",
+                                                    #    truncation_side="left"
+                                                       )
 
-        batch = {
-            "strategy": np.array([choice["strategy"] for choice in bert_choices], dtype=object),
-            "labels": np.array([choice["label"] for choice in bert_choices], dtype=np.int32),
-            "input_ids": np.array([choice["input_ids"] for choice in bert_choices], dtype=np.int32),
-            "attention_mask": np.array([choice["attention_mask"] for choice in bert_choices], dtype=np.int32),
-        }
-        return batch
+    def __call__(self, features):
+        prompt_list = []
+        label_list = []
+        strategy_list = []
+        for sample in features:
+            # assert filter_samples(sample)
+            target = sample["dialogue"][-1]["target"]
+            assert target is not None
+            target_strategies = set(target.split(", "))
+            dialogue = "\n".join(f"{d['speaker']}: {d['utterance']}" for d in sample["dialogue"][-max_dialogue_lookback:])
+            strategy = random.choice(strategies)
+            label = int(strategy in target_strategies)
+            prompt = prompt_format.format(dialogue=dialogue, strategy=strategy)
+            strategy_list.append(strategy)
+            label_list.append(label)
+            prompt_list.append(prompt)
+        
+        encoding = self.tokenizer.batch_encode_plus(prompt_list, padding="max_length", truncation=True, max_length=max_tokens_len, return_tensors="np")
+        encoding = {**encoding}
+        encoding["strategy"] = strategy_list
+        encoding["labels"] = np.array(label_list, dtype=np.int32)
+
+        return encoding
+
 
 
 class WhisperDataCollator:
+    def __init__(self):
+        self.feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-small")
+        self.tokenizer = WhisperTokenizer.from_pretrained("openai/whisper-small", truncation_side="left", padding_side="left", bos_token="<|startoftranscript|>")
+        
     def __call__(self, features):
-        rand_indices = np.random.randint(0, strategies_len, size=len(features))
-        whisper_choices = [features[i]["whisper_choices"][rand_indices[i]] for i in range(len(features))]
+        audio_list = []
+        for example in features:
+            if "array" not in example["audio"]:
+                arr = audio.decode_example(example["audio"])
+            else:
+                arr = example["audio"]["array"]
+            audio_list.append(arr[-max_audio_len:])
+            
+        # rand_indices = np.random.randint(0, strategies_len, size=len(features))
+        # whisper_choices = [features[i]["whisper_choices"][rand_indices[i]] for i in range(len(features))]
+        strategy_list = []
+        label_list = []
+        prompt_list = []
+        for sample in features:
+            # assert filter_samples(sample)
+            target = sample["dialogue"][-1]["target"]
+            assert target is not None
+            target_strategies = set(target.split(", "))
+            dialogue = "\n".join(f"{d['speaker']}: {d['utterance']}" for d in sample["dialogue"][-max_dialogue_lookback:])
+            strategy = random.choice(strategies)
+            label = int(strategy in target_strategies)
+            prompt = prompt_format.format(dialogue=dialogue, strategy=strategy)  + completions[label]
+            strategy_list.append(strategy)
+            label_list.append(label)
+            prompt_list.append(prompt)
+        encoding = self.tokenizer.batch_encode_plus(prompt_list, padding="max_length", truncation=True, max_length=max_tokens_len+ 1, return_tensors="np")
+        encoding = {**encoding}
+        tokens = encoding.pop("input_ids")
+        
+        encoding["decoder_input_ids"] = tokens[:,:-1]
+        encoding["target_tokens"] = tokens[:,1:]
+        encoding["attention_mask"] = encoding["attention_mask"][:,:-1]
+        loss_mask = np.zeros_like(encoding["attention_mask"], dtype=np.int32)
+        loss_mask[:,-1] = 1
+        encoding["loss_mask"] = loss_mask
+        encoding["strategy"] = strategy_list
+        encoding["labels"] = np.array(label_list, dtype=np.int32)
+        encoding["input_features"] = self.feature_extractor(np.array(audio_list), sampling_rate=sampling_rate).input_features
 
-        batch = {
-            "strategy": [choice["strategy"] for choice in whisper_choices],
-            "labels": np.array([choice["label"] for choice in whisper_choices], dtype=np.int32),
-            "input_features": np.array([feature["input_features"] for feature in features], dtype=np.float32),
-            "decoder_input_ids": np.array([choice["decoder_input_ids"] for choice in whisper_choices], dtype=np.int32),
-            "target_tokens": np.array([choice["target_tokens"] for choice in whisper_choices], dtype=np.int32),
-            "attention_mask": np.array([choice["attention_mask"] for choice in whisper_choices], dtype=np.int32),
-            "loss_mask": np.array([choice["loss_mask"] for choice in whisper_choices], dtype=np.float32),
-        }
-        return batch
+        return encoding
 
 
 
@@ -541,6 +596,17 @@ def get_data_collator(model_name):
         return WhisperDataCollator(), whisper_steps, model
 
 
+
+def filter_samples(sample):
+    target = sample["dialogue"][-1]["target"]
+    if target is None:
+        return False
+    target_strategies = set(target.split(", "))
+    if len(target_strategies) == 0:
+        return False
+    return True
+
+
 def train(model_name):
     setup_logging()
     mp.set_start_method("spawn", force=True)
@@ -549,17 +615,17 @@ def train(model_name):
     num_proc = os.cpu_count() // 2
 
     dataset = load_dataset("iohadrubin/werewolf_dialogue_data_10sec", num_proc=num_proc)
-    new_dataset = datasets.DatasetDict()
-    for split in ["train",
-                #   "validation","test"
-                  ]:
-        new_dataset[split] = dataset[split].select(range(300))
-    dataset = new_dataset
+    # new_dataset = datasets.DatasetDict()
+    # for split in ["train",
+    #             #   "validation","test"
+    #               ]:
+    #     new_dataset[split] = dataset[split].select(range(300))
+    # dataset = new_dataset
     
-    dataset = dataset.filter(filter_sample, num_proc=num_proc)
+    dataset = dataset.filter(filter_samples, num_proc=num_proc)
 
-    process_sample = create_process_sample()
-    dataset = dataset.map(process_sample, num_proc=num_proc)
+    # process_sample = create_process_sample()
+    # dataset = dataset.map(process_sample, num_proc=num_proc)
 
     dataset = dataset.shuffle(seed=42)
     dataset = dataset.flatten_indices(num_proc=num_proc)
