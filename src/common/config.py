@@ -42,10 +42,9 @@ training:
 
 
 def get_config(model_name):
-    match model_name:
-        case "bert":
-            return ConfigDict(yaml.safe_load(BERT_CONFIG))
-        case "whisper":
-            return ConfigDict(yaml.safe_load(WHISPER_CONFIG))
-        case _:
-            raise Exception(f"Model name {model_name} is not supported.")
+    if model_name has "bert":
+      return ConfigDict(yaml.safe_load(BERT_CONFIG))
+    elif model_name has "whisper":
+      return ConfigDict(yaml.safe_load(WHISPER_CONFIG))
+    else:
+       raise Exception(f"Model name {model_name} is not supported.")
