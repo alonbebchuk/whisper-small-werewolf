@@ -89,5 +89,5 @@ if __name__ == "__main__":
 
     dataset = dataset.shuffle(seed=42)
     dataset = dataset.flatten_indices(num_proc=num_proc)
-
+    print(dataset)
     dataset.save_to_disk("/dev/shm/hf_cache/werewolf_data", num_proc=num_proc)

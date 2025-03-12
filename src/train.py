@@ -95,7 +95,7 @@ def train(model_name):
     num_epochs = 2
     worker_id = jax.process_index()
     if worker_id == 0:
-        wandb.init(entity="alonbebchuk-tel-aviv-university", project="whisper" if "whisper_warewolf" in model_name else "bert_warewolf", config=config.to_dict())
+        wandb.init(project="whisper_werewolf", config=config.to_dict())
 
     lr_schedule = create_learning_rate_schedule(config)
 
