@@ -9,6 +9,7 @@ from typing import Dict
 
 import jax.numpy as jnp
 from jax import jit
+import jax
 import optax
 from flax.training.common_utils import onehot
 
@@ -17,6 +18,12 @@ from flax.training.common_utils import onehot
 @jit
 def train_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray]):
     def loss_fn(params):
+        labels = batch["labels"]
+        # jax.debug.print("🤯 labels={labels}", labels=labels)
+        input_ids = batch["input_ids"]
+        # jax.debug.print("🤯 input_ids={input_ids}", input_ids=input_ids[0])
+        # print(batch["input_ids"].shape)
+        
         outputs = state.apply_fn(**{"params": params},
                                  input_ids=batch["input_ids"],
                                  attention_mask=batch["attention_mask"],
@@ -24,8 +31,22 @@ def train_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray]):
                                  dropout_rng=state.dropout_rng)
 
         # preds = jnp.argmax(outputs.logits, axis=-1)
-        loss, metrics = loss_and_metrics(outputs.logits, batch["labels"])
-        preds = None
+        logits = outputs.logits[...,0]
+        
+        # loss, metrics = loss_and_metrics(outputs.logits, batch["labels"])
+    
+    
+        labels = labels.astype(logits.dtype)
+        log_p = jax.nn.log_sigmoid(outputs.logits)
+        preds = logits>0
+        
+        # log(1 - sigmoid(x)) = log_sigmoid(-x), the latter more numerically stable
+        log_not_p = jax.nn.log_sigmoid(-logits)
+        loss =  -labels * log_p - (1. - labels) * log_not_p
+        loss = jnp.where(jnp.isnan(loss), 0, loss)
+        loss = jnp.sum(loss)
+        metrics = {"correct_sum": jnp.sum(preds == labels), "total_sum": labels.shape[0]}
+        # preds = None
         return loss, (preds, metrics)
 
     grad_fn = value_and_grad(loss_fn, has_aux=True)
@@ -53,12 +74,17 @@ def train_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray]):
 @jit
 def eval_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray]):
     def loss_fn(params):
+        labels = batch["labels"],
+        jax.debug.print("🤯 labels={labels}", labels=labels)
+        input_ids = batch["input_ids"],
+        jax.debug.print("🤯 input_ids={input_ids}", input_ids=input_ids[0])
         outputs = state.apply_fn(**{"params": params}, 
                                 input_ids=batch["input_ids"], 
                                 attention_mask=batch["attention_mask"], 
                                 deterministic=True)
 
-        loss, metrics = loss_and_metrics(outputs.logits, batch["labels"], batch["attention_mask"])
+        # loss, metrics = loss_and_metrics(outputs.logits, batch["labels"][...,None], batch["attention_mask"])
+        loss, metrics = loss_and_metrics(outputs.logits, batch["labels"][...,None])
         return loss, metrics
 
     loss, metrics = loss_fn(state.params)

@@ -13,11 +13,12 @@ metrics:
 model:
   name: "google-bert/bert-base-cased"
 training:
-  b2: 0.99
+  b2: 0.95
   batch_size: 64
-  lr: 5e-6
+  lr: 5e-9
   total_steps: 1000
   warmup_steps: 100
+  eps: 1e-6
   wd: 0.001
 """
 
@@ -37,6 +38,7 @@ training:
   lr: 5e-5
   total_steps: 1000
   warmup_steps: 100
+  eps: 1e-8
   wd: 0.01
 """
 

@@ -58,10 +58,12 @@ def setup_logging():
 def worker_init_fn(worker_id):
     np.random.seed(worker_id + int(time.time()))
 
-
+from transformers import AutoConfig
 def get_data_collator(model_name):
     if "bert" in model_name:
-        model = FlaxBertForSequenceClassification.from_pretrained(model_name, from_pt=True)
+        config = AutoConfig.from_pretrained(model_name)
+        config.num_labels = 1
+        model = FlaxBertForSequenceClassification.from_pretrained(model_name, from_pt=True, config=config)
         return BertDataCollator(), bert_steps, model
     else:
         assert "whisper" in model_name
@@ -114,9 +116,10 @@ def train(model_name):
             batch = shard(batch)
 
             state, curr_loss, curr_acc, preds = p_train_step(state, batch)
-            if step > 100:
-                print(f"{preds=}")
-                assert preds is not None
+            # if step > 10:
+            #     assert False
+            #     print(f"{preds=}")
+            #     assert preds is not None
             curr_loss = curr_loss.mean().item()
             curr_acc = curr_acc.mean().item()
 
