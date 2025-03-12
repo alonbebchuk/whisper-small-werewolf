@@ -23,9 +23,8 @@ def train_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray]):
                                  train=True,
                                  dropout_rng=state.dropout_rng)
 
-        # preds = jnp.argmax(outputs.logits, axis=-1)
+        preds = jnp.argmax(outputs.logits, axis=-1)
         loss, metrics = loss_and_metrics(outputs.logits, batch["labels"])
-        preds = None
         return loss, (preds, metrics)
 
     grad_fn = value_and_grad(loss_fn, has_aux=True)

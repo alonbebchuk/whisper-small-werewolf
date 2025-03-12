@@ -3,6 +3,7 @@ import os
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import wandb
 
@@ -125,6 +126,62 @@ def train(model_name):
             print(metrics)
 
             if worker_id == 0:
+                preds = jax.device_get(preds)
+                if "bert" in model_name:
+                    targets = jax.device_get(batch["labels"])
+                    mask = jnp.ones_like(targets)
+                else:
+                    assert "whisper" in model_name
+                    targets = jax.device_get(batch["target_tokens"])
+                    mask = jax.device_get(batch["loss_mask"])                
+                strategy = jax.device_get(strategy)
+
+                print(f"Predictions shape: {preds.shape}")
+                print(f"Targets shape: {targets.shape}")
+                print(f"Mask shape: {mask.shape}")
+                print(f"Strategy shape: {strategy.shape}")
+
+                preds_2d = preds.reshape(-1, preds.shape[-1])
+                targets_2d = targets.reshape(-1, targets.shape[-1])
+                mask_2d = mask.reshape(-1, mask.shape[-1])
+
+                print(f"Reshaped predictions shape: {preds_2d.shape}")
+                print(f"Reshaped targets shape: {targets_2d.shape}")
+                print(f"Reshaped mask shape: {mask_2d.shape}")
+
+                strategy_metrics = {}
+                unique_strategies = np.unique(strategy)
+                print(f"Unique strategies found: {unique_strategies}")
+
+                for strat in unique_strategies:
+                    print(f"\nProcessing strategy: {strat}")
+                    strat_indices = (strategy == strat)
+                    
+                    strat_preds = preds_2d[strat_indices]
+                    strat_targets = targets_2d[strat_indices]
+                    strat_mask = mask_2d[strat_indices]
+                    
+                    print(f"Strategy {strat} shapes:")
+                    print(f"- Predictions: {strat_preds.shape}")
+                    print(f"- Targets: {strat_targets.shape}")
+                    print(f"- Mask: {strat_mask.shape}")
+                    
+                    correct_logits = (strat_preds == strat_targets)
+                    correct_logits = np.where(strat_mask > 0.0, correct_logits, np.array(False))
+                    correct_sum = np.sum(correct_logits)
+                    total_sum = np.sum(strat_mask)
+                    
+                    if total_sum > 0:
+                        accuracy = float(correct_sum) / float(total_sum)
+                        print(f"Strategy {strat} metrics:")
+                        print(f"- Correct: {correct_sum}")
+                        print(f"- Total: {total_sum}")
+                        print(f"- Accuracy: {accuracy:.4f}")
+                        strategy_metrics[f"accuracy_{strat}"] = accuracy
+                        strategy_metrics[f"correct_{strat}"] = int(correct_sum)
+                        strategy_metrics[f"total_{strat}"] = int(total_sum)
+
+                metrics.update(strategy_metrics)
                 wandb.log(metrics)
 
     if worker_id == 0:

@@ -18,8 +18,8 @@ def train_step(state: TrainStateWithMetrics, batch: Dict[str, jnp.ndarray]):
                                  decoder_input_ids=batch["decoder_input_ids"],
                                  decoder_attention_mask=batch["attention_mask"], train=True)
 
+        preds = jnp.argmax(outputs.logits, axis=-1)
         loss, metrics = loss_and_metrics(outputs.logits, batch["target_tokens"], batch["loss_mask"])
-        preds = None
         return loss, (metrics, preds)
 
     grad_fn = value_and_grad(loss_fn, has_aux=True)
