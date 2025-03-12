@@ -2,7 +2,6 @@ import os
 import multiprocessing as mp
 
 os.environ["HF_DATASETS_CACHE"] = "/dev/shm/hf_cache"
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 mp.set_start_method("spawn", force=True)
 
 import datasets

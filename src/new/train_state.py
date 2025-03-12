@@ -20,20 +20,13 @@ class TrainState(train_state.TrainState):
         return jax_utils.replicate(self).replace(dropout_rng=shard_prng_key(self.dropout_rng))
 
 
-def get_adamw(training_args, learning_rate_fn, layer_norm_candidates):
-    def decay_mask_fn(params):
-        flat_params = traverse_util.flatten_dict(params)
-        layer_norm_named_params = {layer[-2:] for layer_norm_name in layer_norm_candidates for layer in flat_params.keys() if layer_norm_name in "".join(layer).lower()}
-        flat_mask = {path: (path[-1] != "bias" and path[-2:] not in layer_norm_named_params) for path in flat_params}
-        return traverse_util.unflatten_dict(flat_mask)
-
+def get_adamw(training_args, learning_rate_fn):
     return optax.adamw(
         b1=training_args.adam_beta1,
         b2=training_args.adam_beta2,
         eps=training_args.adam_epsilon,
         weight_decay=training_args.weight_decay,
         learning_rate=learning_rate_fn,
-        mask=decay_mask_fn,
     )
 
 
@@ -43,38 +36,34 @@ def get_dropout_rng(training_args):
     return dropout_rng
 
 
-def create_train_state(model_name, training_args, layer_norm_candidates, loss_fn):
+def create_train_state(model_name, training_args, loss_fn):
     model = get_model(model_name)
     learning_rate_fn = get_learning_rate_fn(training_args)
-    adamw = get_adamw(training_args, learning_rate_fn, layer_norm_candidates)
+    adamw = get_adamw(training_args, learning_rate_fn)
     dropout_rng = get_dropout_rng(training_args)
 
-    state_args = {
-        "apply_fn": model.__call__,
-        "params": model.params,
-        "tx": adamw,
-        "dropout_rng": dropout_rng,
-        "learning_rate_fn": learning_rate_fn,
-        "loss_fn": loss_fn,
-        "logits_fn": lambda logits: logits.argmax(-1),
-    }
-    return TrainState.create(**state_args)
+    return TrainState.create(
+        apply_fn=model.__call__,
+        params=model.params,
+        tx=adamw,
+        dropout_rng=dropout_rng,
+        learning_rate_fn=learning_rate_fn,
+        loss_fn=loss_fn,
+        logits_fn=lambda logits: logits.argmax(-1),
+    )
 
 
 def get_bert_train_state(model_name, training_args):
-    layer_norm_candidates = ["layernorm", "layer_norm", "ln"]
     num_classes = 2
 
     def loss_fn(logits, labels):
         xentropy = optax.softmax_cross_entropy(logits, onehot(labels, num_classes))
         return jnp.mean(xentropy)
 
-    return create_train_state(model_name, training_args, layer_norm_candidates, loss_fn)
+    return create_train_state(model_name, training_args, loss_fn)
 
 
 def get_whisper_train_state(model_name, training_args):
-    layer_norm_candidates = ["layer_norm", "self_attn_layer_norm", "final_layer_norm", "encoder_attn_layer_norm"]
-
     def loss_fn(logits, labels):
         vocab_size = logits.shape[-1]
         confidence = 1.0 - training_args.label_smoothing_factor
@@ -89,7 +78,7 @@ def get_whisper_train_state(model_name, training_args):
         num_labels = padding_mask.sum()
         return loss, num_labels
 
-    return create_train_state(model_name, training_args, layer_norm_candidates, loss_fn)
+    return create_train_state(model_name, training_args, loss_fn)
 
 
 _train_state = None

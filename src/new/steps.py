@@ -28,8 +28,8 @@ def create_train_step(state, batch, apply_fn_kwargs, loss_and_grad_fn):
     labels = batch.pop("labels")
 
     def loss_fn(params):
-        logits = state.apply_fn(**apply_fn_kwargs, params=params, dropout_rng=dropout_rng, train=True)[0]
-        return state.loss_fn(logits, labels)
+        outputs = state.apply_fn(**apply_fn_kwargs, params=params, dropout_rng=dropout_rng, train=True)
+        return state.loss_fn(outputs.logits, labels)
 
     loss, grad = loss_and_grad_fn(loss_fn)
     new_state = state.apply_gradients(grads=grad, dropout_rng=new_dropout_rng)
@@ -39,11 +39,12 @@ def create_train_step(state, batch, apply_fn_kwargs, loss_and_grad_fn):
 
 def create_eval_step(state, batch, apply_fn_kwargs, loss_fn):
     labels = batch.pop("labels")
-    logits = state.apply_fn(**apply_fn_kwargs, params=state.params, train=False)[0]
-    loss = loss_fn(logits, labels)
-    predictions = state.logits_fn(logits)
-    strategy_metrics = get_strategy_metrics(predictions, labels, batch["strategy_id"])
-    metrics = {"loss": loss}.update(strategy_metrics)
+    outputs = state.apply_fn(**apply_fn_kwargs, params=state.params, train=False)
+    loss = loss_fn(outputs.logits, labels)
+    # predictions = state.logits_fn(logits)
+    # strategy_metrics = get_strategy_metrics(predictions, labels, batch["strategy_id"])
+    # metrics = {"loss": loss}.update(strategy_metrics)
+    metrics = {"loss": loss}
     return metrics
 
 

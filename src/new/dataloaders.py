@@ -26,7 +26,7 @@ def get_dataloaders(model_name, training_args):
             worker_init_fn=worker_init_fn,
             drop_last=True,
             persistent_workers=True,
-            pin_memory=True,
+            # pin_memory=True,
         )
         train_loader = DataLoader(dataset["train"], batch_size=training_args._train_batch_size, shuffle=True, **common_kwargs)
         eval_loader = DataLoader(dataset["validation"], batch_size=training_args._eval_batch_size, shuffle=False, **common_kwargs)
