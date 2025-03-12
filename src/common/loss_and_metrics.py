@@ -1,16 +1,19 @@
+import jax
 import jax.numpy as jnp
 
 from jax.nn import log_softmax
-import jax
 
-def loss_and_metrics(logits, tokens, mask=None):
+def loss_and_metrics(labels, logits, tokens, mask=None):
     logits = logits.astype(jnp.float32)
     
     if mask is None:
-        # Create a mask of ones with the same shape as tokens
         mask = jnp.ones_like(tokens, dtype=jnp.float32)
     else:
         mask = mask.astype(jnp.float32)
+        ones_indices = jnp.argmax((mask > 0).astype(jnp.int32), axis=-1)
+        mask_shape = mask.shape
+        mask = jnp.zeros_like(mask)
+        mask = mask.at[jnp.arange(mask_shape[0]), ones_indices].set(1.0)
 
     total_sum = jnp.sum(mask)
 
@@ -24,8 +27,24 @@ def loss_and_metrics(logits, tokens, mask=None):
 
     correct_logits = jnp.argmax(logits, axis=-1) == tokens
     correct_logits = jnp.where(mask > 0.0, correct_logits, jnp.array(False))
-    correct_sum = jnp.sum(correct_logits)
-    metrics = {"correct_sum": correct_sum, "total_sum": total_sum}
-    jax.debug.print("🤯 {x} 🤯", x=loss)
+    correct_num = jnp.sum(correct_logits, axis=-1)
+    correct = correct_num > 0
+    
+    tp = jnp.sum((correct & (labels == 1)))
+    fp = jnp.sum((~correct & (labels == 0)))
+    tn = jnp.sum((correct & (labels == 0)))
+    fn = jnp.sum((~correct & (labels == 1)))
+    
+    n_pos = jnp.sum((labels == 1).astype(jnp.int32))
+    n_neg = jnp.sum((labels == 0).astype(jnp.int32))
+
+    metrics = {
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "tn": tn,
+        "n_pos": n_pos,
+        "n_neg": n_neg,
+    }
 
     return loss, metrics
